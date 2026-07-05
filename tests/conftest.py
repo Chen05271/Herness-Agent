@@ -41,6 +41,7 @@ def test_config(test_settings: Settings) -> OrchestratorConfig:
         step_timeout_seconds=test_settings.step_timeout_seconds,
         task_timeout_seconds=test_settings.task_timeout_seconds,
         max_retries_per_step=test_settings.max_retries_per_step,
+        max_parallel_workers=test_settings.max_parallel_workers,
     )
 
 

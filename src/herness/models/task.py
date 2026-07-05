@@ -50,6 +50,10 @@ class TaskRequest(BaseModel):
     session_id: str = Field(default_factory=lambda: str(uuid4()))
     input: str
     metadata: dict[str, Any] = Field(default_factory=dict)
+    task_id: str | None = Field(
+        default=None,
+        description="可选；API 层预分配 task_id 时传入",
+    )
 
 
 class TaskResult(BaseModel):
@@ -73,6 +77,7 @@ class TaskState(BaseModel):
     messages: list[TaskMessage] = Field(default_factory=list)
     last_supervisor: SupervisorOutput | None = None
     last_worker: WorkerOutput | None = None
+    last_workers: list[WorkerOutput] = Field(default_factory=list)
     last_critic: CriticOutput | None = None
     plan_hashes: list[str] = Field(default_factory=list)  # 用于检测循环规划
     started_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
@@ -86,3 +91,4 @@ class OrchestratorConfig(BaseModel):
     step_timeout_seconds: float = 120.0
     task_timeout_seconds: float = 600.0
     max_retries_per_step: int = 2
+    max_parallel_workers: int = 4

@@ -1,6 +1,12 @@
 """执行 Agent 结构化输出模型 — Worker 仅负责完成任务，不可见全局记忆。"""
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
+
+WorkerKind = Literal["default", "research", "code", "summary"]
+
+WORKER_KINDS: tuple[WorkerKind, ...] = ("default", "research", "code", "summary")
 
 
 class WorkerOutput(BaseModel):

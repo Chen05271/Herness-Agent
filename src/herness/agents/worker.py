@@ -8,20 +8,9 @@ from pydantic_ai import Agent, RunContext
 from herness.agents.base import build_model
 from herness.config import Settings
 from herness.middleware.protocol import ReadOnlyMiddleware
-from herness.models.worker import WorkerOutput
+from herness.models.worker import WORKER_KINDS, WorkerKind, WorkerOutput
 
-
-@dataclass
-class WorkerDeps:
-    """执行 Agent 依赖 — 仅只读中台，无全局记忆。"""
-
-    middleware: ReadOnlyMiddleware
-    user_id: str
-    task_id: str
-    local_context: dict[str, Any]
-
-
-WORKER_SYSTEM = """\
+_DEFAULT_WORKER_SYSTEM = """\
 你是 Herness 系统的执行 Agent（Worker）。
 职责：
 1. 根据总管给出的任务指令完成具体工作
@@ -34,15 +23,34 @@ WORKER_SYSTEM = """\
 """
 
 
-def build_worker_agent(settings: Settings) -> Agent[WorkerDeps, WorkerOutput]:
-    """构建执行 Agent 实例。"""
+@dataclass
+class WorkerDeps:
+    """执行 Agent 依赖 — 仅只读中台，无全局记忆。"""
+
+    middleware: ReadOnlyMiddleware
+    user_id: str
+    task_id: str
+    local_context: dict[str, Any]
+    worker_type: WorkerKind = "default"
+
+
+def build_worker_agent(
+    settings: Settings,
+    *,
+    kind: WorkerKind = "default",
+    system_prompt: str | None = None,
+) -> Agent[WorkerDeps, WorkerOutput]:
+    """构建执行 Agent 实例，可按 kind 使用专业化系统提示。"""
+    if kind not in WORKER_KINDS:
+        raise ValueError(f"未知 worker kind: {kind!r}")
     model = build_model(settings, temperature=settings.worker_temperature)
+    prompt = system_prompt or _DEFAULT_WORKER_SYSTEM
 
     agent: Agent[WorkerDeps, WorkerOutput] = Agent(
         model,
         deps_type=WorkerDeps,
         output_type=WorkerOutput,
-        system_prompt=WORKER_SYSTEM,
+        system_prompt=prompt,
         retries=settings.max_retries_per_step,
     )
 

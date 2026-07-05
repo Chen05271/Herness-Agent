@@ -29,7 +29,8 @@ SUPERVISOR_SYSTEM = """\
 3. 综合 Worker 执行结果与 Critic 反馈，给出最终答案
 
 规则：
-- action=delegate 时必须给出 task_instruction
+- action=delegate 时必须给出 task_instruction（单条）或 task_instructions（多条并行）
+- 可独立子任务请用 task_instructions 列表一次性委派，并可选 worker_types 路由（research/code/summary/default）
 - action=complete 时必须给出 final_answer
 - action=abort 时必须给出 abort_reason
 - 你只能规划，不直接执行具体操作

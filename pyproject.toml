@@ -7,6 +7,8 @@ dependencies = [
     "pydantic-ai>=2.0",
     "pydantic-settings>=2.0",
     "httpx>=0.27",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
 ]
 
 [project.optional-dependencies]
@@ -14,10 +16,20 @@ dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.24",
     "ruff>=0.8",
+    "asyncpg>=0.30",
+    "fakeredis>=2.0",
+    "redis>=5.0",
+]
+postgres = [
+    "asyncpg>=0.30",
+]
+redis = [
+    "redis>=5.0",
 ]
 
 [project.scripts]
 herness = "herness.main:main"
+herness-api = "herness.api.app:main"
 
 [build-system]
 requires = ["hatchling"]
@@ -25,6 +37,9 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/herness"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"src/herness/middleware/schema.sql" = "herness/middleware/schema.sql"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

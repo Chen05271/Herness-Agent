@@ -1,7 +1,8 @@
-"""内存桩实现 — 开发/测试用，后续替换为 PostgresMiddleware + RedisCache。"""
+"""内存桩实现 — 开发/测试用；生产环境配合 PostgresMiddleware + Redis 增强层。"""
 
 from typing import Any
 
+from herness.middleware.beliefs import match_beliefs
 from herness.middleware.memory import PreSynthesizedMemory, SynthesizedMemorySlice
 from herness.models.worker import WorkerOutput
 
@@ -31,18 +32,7 @@ class InMemoryMiddleware:
 
     async def query_beliefs(self, user_id: str, claims: list[str]) -> list[dict[str, Any]]:
         """从信念库检索与声明相关的条目。"""
-        user_beliefs = self._beliefs.get(user_id, [])
-        results: list[dict[str, Any]] = []
-        for claim in claims:
-            matched = [
-                b for b in user_beliefs
-                if claim.lower() in b.get("fact", "").lower()
-            ]
-            if matched:
-                results.append({"claim": claim, "status": "supported", "matches": matched})
-            else:
-                results.append({"claim": claim, "status": "unknown", "matches": []})
-        return results
+        return match_beliefs(self._beliefs.get(user_id, []), claims)
 
     # ── 读写接口（仅调度器/总管）──
 

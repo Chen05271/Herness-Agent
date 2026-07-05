@@ -6,12 +6,14 @@ import logging
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 from typing import TypeVar
+from uuid import uuid4
 
 from pydantic_ai import Agent
 
 from herness.agents.critic import CriticDeps, build_critic_agent
+from herness.agents.registry import WORKER_KINDS, build_worker_registry
 from herness.agents.supervisor import SupervisorDeps, build_supervisor_agent
-from herness.agents.worker import WorkerDeps, build_worker_agent
+from herness.agents.worker import WorkerDeps
 from herness.config import Settings, get_settings
 from herness.middleware.protocol import DataMiddleware
 from herness.models.critic import CriticOutput
@@ -25,7 +27,8 @@ from herness.models.task import (
     TaskState,
     TaskStatus,
 )
-from herness.models.worker import WorkerOutput
+from herness.models.worker import WorkerKind, WorkerOutput
+from herness.observability.logging import log_event, set_trace_id
 
 logger = logging.getLogger(__name__)
 
@@ -60,16 +63,28 @@ class Orchestrator:
             step_timeout_seconds=self.settings.step_timeout_seconds,
             task_timeout_seconds=self.settings.task_timeout_seconds,
             max_retries_per_step=self.settings.max_retries_per_step,
+            max_parallel_workers=self.settings.max_parallel_workers,
         )
 
-        # 构建三个 Agent（节点层）；测试时可注入 mock
+        # 构建 Agent（节点层）；测试时可注入 mock
         self._supervisor = supervisor or build_supervisor_agent(self.settings)
-        self._worker = worker or build_worker_agent(self.settings)
+        if worker is not None:
+            self._workers: dict[WorkerKind, Agent[WorkerDeps, WorkerOutput]] = {
+                kind: worker for kind in WORKER_KINDS
+            }
+        else:
+            self._workers = build_worker_registry(self.settings)
+        self._worker = worker or self._workers["default"]
         self._critic = critic or build_critic_agent(self.settings)
 
     async def run(self, request: TaskRequest) -> TaskResult:
         """执行完整任务流程：拉记忆 → 总管规划 → Worker 执行 → Critic 校验 → 循环/完成。"""
-        state = TaskState(request=request, status=TaskStatus.RUNNING)
+        state = TaskState(
+            task_id=request.task_id or str(uuid4()),
+            request=request,
+            status=TaskStatus.RUNNING,
+        )
+        set_trace_id(state.task_id)
 
         # 任务启动：从中台拉取预合成全局记忆，注入总管
         memory = await self.middleware.get_pre_synthesized_memory(request.user_id)
@@ -101,36 +116,25 @@ class Orchestrator:
                     if sup_out.action == SupervisorAction.ABORT:
                         return self._abort(state, sup_out.abort_reason)
 
-                    # ── 2. Worker 执行（无全局记忆）──
-                    worker_out = await self._run_worker(state, sup_out.task_instruction)
-                    state.last_worker = worker_out
+                    # ── 2. Worker 执行（无全局记忆，支持并行）──
+                    instructions = sup_out.delegate_instructions()
+                    worker_types = sup_out.delegate_worker_types()
+                    if not instructions:
+                        return self._fail(state, "delegate 动作缺少 task_instruction(s)")
 
-                    if not worker_out.needs_verification:
-                        await self._persist(state, worker_out)
-                        supervisor_prompt = f"Worker 已完成：{worker_out.summary}\n请决定 complete 或继续 delegate。"
-                        critic_feedback = ""
-                        continue
+                    worker_outputs = await self._run_workers_batch(
+                        state, instructions, worker_types
+                    )
+                    state.last_workers = worker_outputs
+                    state.last_worker = worker_outputs[-1] if worker_outputs else None
 
-                    # ── 3. Critic 校验 ──
-                    critic_out = await self._run_critic(state, worker_out)
-                    state.last_critic = critic_out
-
-                    if critic_out.passed:
-                        await self._persist(state, worker_out)
-                        supervisor_prompt = (
-                            f"Worker 输出已通过校验：{worker_out.summary}\n"
-                            f"请给出最终答案（action=complete）。"
-                        )
-                        critic_feedback = ""
-                    else:
-                        # 校验失败 → 反馈给总管重试
-                        critic_feedback = critic_out.feedback
-                        supervisor_prompt = request.input
-                        self._log(
-                            state,
-                            AgentRole.ORCHESTRATOR,
-                            f"Critic 驳回：{critic_feedback}",
-                        )
+                    next_prompt, next_feedback, failed = await self._handle_worker_outputs(
+                        state, worker_outputs, request.input
+                    )
+                    if failed:
+                        return failed
+                    supervisor_prompt = next_prompt
+                    critic_feedback = next_feedback
 
                 return self._fail(state, f"超过最大轮数 ({self.config.max_rounds})")
 
@@ -204,8 +208,39 @@ class Orchestrator:
 
         return await self._run_step_with_retry(state, "Supervisor", _call)
 
-    async def _run_worker(self, state: TaskState, instruction: str) -> WorkerOutput:
+    async def _run_workers_batch(
+        self,
+        state: TaskState,
+        instructions: list[str],
+        worker_types: list[WorkerKind],
+    ) -> list[WorkerOutput]:
+        """并行 dispatch 多个 Worker（受 max_parallel_workers 限制）。"""
+        sem = asyncio.Semaphore(self.config.max_parallel_workers)
+
+        async def _limited(instr: str, wtype: WorkerKind) -> WorkerOutput:
+            async with sem:
+                return await self._run_worker(state, instr, worker_type=wtype)
+
+        outputs = await asyncio.gather(
+            *[_limited(instr, wtype) for instr, wtype in zip(instructions, worker_types, strict=True)]
+        )
+        self._log(
+            state,
+            AgentRole.ORCHESTRATOR,
+            f"并行 Worker 完成 {len(outputs)} 条",
+            payload={"worker_count": len(outputs), "worker_types": worker_types},
+        )
+        return list(outputs)
+
+    async def _run_worker(
+        self,
+        state: TaskState,
+        instruction: str,
+        *,
+        worker_type: WorkerKind = "default",
+    ) -> WorkerOutput:
         """调用执行 Agent — 故意不传全局记忆。"""
+        agent = self._workers.get(worker_type, self._workers["default"])
         local_context = await self.middleware.get_task_context(
             state.request.user_id, state.task_id
         )
@@ -214,18 +249,71 @@ class Orchestrator:
             user_id=state.request.user_id,
             task_id=state.task_id,
             local_context=local_context,
+            worker_type=worker_type,
         )
 
         async def _call() -> WorkerOutput:
             result = await asyncio.wait_for(
-                self._worker.run(instruction, deps=deps),
+                agent.run(instruction, deps=deps),
                 timeout=self.config.step_timeout_seconds,
             )
             output = result.output
-            self._log(state, AgentRole.WORKER, output.summary)
+            self._log(
+                state,
+                AgentRole.WORKER,
+                output.summary,
+                payload={"worker_type": worker_type},
+            )
             return output
 
-        return await self._run_step_with_retry(state, "Worker", _call)
+        step_name = f"Worker({worker_type})"
+        return await self._run_step_with_retry(state, step_name, _call)
+
+    async def _handle_worker_outputs(
+        self,
+        state: TaskState,
+        worker_outputs: list[WorkerOutput],
+        original_input: str,
+    ) -> tuple[str, str, TaskResult | None]:
+        """处理 Worker 输出：跳过/并行 Critic 校验，返回下一轮 prompt 或终态。"""
+        to_verify = [out for out in worker_outputs if out.needs_verification]
+        no_verify = [out for out in worker_outputs if not out.needs_verification]
+
+        for out in no_verify:
+            await self._persist(state, out)
+
+        if not to_verify:
+            summaries = "; ".join(out.summary for out in worker_outputs)
+            return (
+                f"Worker 已完成：{summaries}\n请决定 complete 或继续 delegate。",
+                "",
+                None,
+            )
+
+        critic_results = await asyncio.gather(
+            *[self._run_critic(state, out) for out in to_verify]
+        )
+        state.last_critic = critic_results[-1]
+
+        failed = [c for c in critic_results if not c.passed]
+        if failed:
+            critic_feedback = "\n".join(c.feedback for c in failed if c.feedback)
+            self._log(
+                state,
+                AgentRole.ORCHESTRATOR,
+                f"Critic 驳回 {len(failed)}/{len(critic_results)} 条",
+                payload={"rejected_count": len(failed)},
+            )
+            return original_input, critic_feedback, None
+
+        for out in to_verify:
+            await self._persist(state, out)
+        summaries = "; ".join(out.summary for out in worker_outputs)
+        return (
+            f"Worker 输出已通过校验：{summaries}\n请给出最终答案（action=complete）。",
+            "",
+            None,
+        )
 
     async def _run_critic(self, state: TaskState, worker_output: WorkerOutput) -> CriticOutput:
         """调用校验 Agent。"""
@@ -308,12 +396,34 @@ class Orchestrator:
     @staticmethod
     def _hash_plan(output: SupervisorOutput) -> str:
         """对总管规划做哈希，用于循环检测。"""
-        raw = f"{output.action.value}|{output.task_instruction}|{output.reasoning}"
+        instructions = "|".join(output.delegate_instructions())
+        types = "|".join(output.delegate_worker_types())
+        raw = f"{output.action.value}|{instructions}|{types}|{output.reasoning}"
         return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
     @staticmethod
-    def _log(state: TaskState, role: AgentRole, content: str) -> None:
-        """记录审计日志。"""
-        msg = TaskMessage(role=role, round_index=state.round_index, content=content)
+    def _log(
+        state: TaskState,
+        role: AgentRole,
+        content: str,
+        *,
+        payload: dict | None = None,
+    ) -> None:
+        """记录审计日志与结构化 trace。"""
+        msg = TaskMessage(
+            role=role,
+            round_index=state.round_index,
+            content=content,
+            payload=payload or {},
+        )
         state.messages.append(msg)
-        logger.info("[%s] round=%d %s", role.value, state.round_index, content)
+        log_event(
+            logger,
+            logging.INFO,
+            "orchestrator_step",
+            role=role.value,
+            round_index=state.round_index,
+            message=content,
+            task_id=state.task_id,
+            **(payload or {}),
+        )

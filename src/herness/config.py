@@ -55,10 +55,23 @@ class Settings(BaseSettings):
     step_timeout_seconds: float = Field(default=120.0, gt=0, description="单步超时（秒）")
     task_timeout_seconds: float = Field(default=600.0, gt=0, description="整任务超时（秒）")
     max_retries_per_step: int = Field(default=2, ge=0, le=10, description="单步最大重试次数")
+    max_parallel_workers: int = Field(
+        default=4, ge=1, le=20, description="单轮并行 Worker 上限"
+    )
 
-    # ── 数据库占位（后续接入 Postgres + Redis）──
+    # ── HTTP API ──
+    api_host: str = Field(default="0.0.0.0", description="API 监听地址")
+    api_port: int = Field(default=8080, ge=1, le=65535, description="API 监听端口")
+
+    # ── 数据库（Postgres 持久化 + Redis 缓存/队列）──
     postgres_dsn: str = Field(default="", description="PostgreSQL 连接串")
     redis_url: str = Field(default="", description="Redis 连接地址")
+    redis_memory_ttl_seconds: int = Field(
+        default=3600, ge=60, description="预合成记忆 Redis 缓存 TTL（秒）"
+    )
+    redis_task_ttl_seconds: int = Field(
+        default=86400, ge=300, description="API 任务状态 Redis TTL（秒）"
+    )
 
     # ── 离线管线占位（Dreaming + Hereness）──
     dreaming_enabled: bool = False   # 异步事实提炼
