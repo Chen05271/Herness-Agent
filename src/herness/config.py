@@ -73,8 +73,14 @@ class Settings(BaseSettings):
         default=86400, ge=300, description="API 任务状态 Redis TTL（秒）"
     )
 
-    # ── 离线管线占位（Dreaming + Hereness）──
+    # ── 离线管线（Dreaming + Hereness）──
     dreaming_enabled: bool = False   # 异步事实提炼
+    dreaming_temperature: float = Field(
+        default=0.2, ge=0.0, le=2.0, description="Dreaming 记忆合成温度"
+    )
+    dreaming_poll_timeout_seconds: int = Field(
+        default=5, ge=0, le=300, description="Dreaming 队列阻塞出队超时（秒）"
+    )
     hereness_enabled: bool = False   # 信念库冲突消歧
 
     def model_post_init(self, __context: object) -> None:

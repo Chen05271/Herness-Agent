@@ -30,6 +30,7 @@ redis = [
 [project.scripts]
 herness = "herness.main:main"
 herness-api = "herness.api.app:main"
+herness-dreaming = "herness.dreaming.app:main"
 
 [build-system]
 requires = ["hatchling"]

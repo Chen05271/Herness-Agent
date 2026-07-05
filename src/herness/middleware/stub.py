@@ -57,6 +57,44 @@ class InMemoryMiddleware:
         """将任务加入 Dreaming 队列（占位，不实际执行）。"""
         self._dreaming_queue.append((user_id, task_id))
 
+    async def get_task_result(self, user_id: str, task_id: str) -> WorkerOutput | None:
+        """读取已持久化的任务结果，供 Dreaming 消费。"""
+        output = self._task_results.get(task_id)
+        if output is None:
+            return None
+        return output
+
+    async def save_pre_synthesized_memory(self, memory: PreSynthesizedMemory) -> None:
+        """写入或更新预合成记忆（Dreaming 合成后调用）。"""
+        self._memories[memory.user_id] = memory
+
+    async def dequeue_dreaming_job(self, *, timeout: int = 0) -> tuple[str, str] | None:
+        """FIFO 出队；timeout>0 时在超时前轮询等待。"""
+        import asyncio
+
+        if self._dreaming_queue:
+            return self._dreaming_queue.pop(0)
+        if timeout <= 0:
+            return None
+
+        elapsed = 0.0
+        poll = 0.05
+        while elapsed < timeout:
+            await asyncio.sleep(poll)
+            elapsed += poll
+            if self._dreaming_queue:
+                return self._dreaming_queue.pop(0)
+        return None
+
+    async def mark_dreaming_job_done(
+        self,
+        user_id: str,
+        task_id: str,
+        *,
+        success: bool = True,
+    ) -> None:
+        """内存桩无状态跟踪，仅保留接口兼容。"""
+
     # ── 测试辅助方法 ──
 
     def seed_memory(self, user_id: str, summary: str, slices: list[SynthesizedMemorySlice] | None = None) -> None:
@@ -67,9 +105,17 @@ class InMemoryMiddleware:
             slices=slices or [],
         )
 
-    def seed_belief(self, user_id: str, fact: str, source: str = "manual") -> None:
+    def seed_belief(
+        self,
+        user_id: str,
+        fact: str,
+        source: str = "manual",
+        confidence: float = 1.0,
+    ) -> None:
         """预置信念库条目。"""
-        self._beliefs.setdefault(user_id, []).append({"fact": fact, "source": source})
+        self._beliefs.setdefault(user_id, []).append(
+            {"fact": fact, "source": source, "confidence": confidence}
+        )
 
     @property
     def dreaming_queue(self) -> list[tuple[str, str]]:

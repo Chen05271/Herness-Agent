@@ -2,7 +2,7 @@
 
 多 Agent 协作框架：**PydanticAI 节点层 + 手写调度器 + 数据中台协议**。
 
-> 版本：0.1.0 · Python >= 3.11 · 当前阶段：**可运行 Demo + HTTP API + Postgres/Redis 持久化**
+> 版本：0.1.0 · Python >= 3.11 · 当前阶段：**可运行 Demo + HTTP API + Postgres/Redis 持久化 + Dreaming 离线记忆合成**
 
 ---
 
@@ -51,6 +51,10 @@ Herness Agent 刻意不依赖 LangGraph 等图编排框架，采用**显式状�
     memories / beliefs /          记忆热缓存
     task_results / contexts       Dreaming 队列
                                   API 任务状态
+                            │
+                            ▼
+                   Dreaming Worker（独立进程）
+              读 task_result → LLM 合成 → 写回 memories / beliefs
 ```
 
 ### 单次任务流程
@@ -60,9 +64,10 @@ Herness Agent 刻意不依赖 LangGraph 等图编排框架，采用**显式状�
 2. Supervisor 决策：delegate / complete / abort
 3. delegate → Worker 执行（无全局记忆，支持多 Worker 并行）
 4. needs_verification=true → Critic 校验
-5. 校验通过 → 写入 Postgres + Dreaming 入 Redis 队列
+5. 校验通过 → 写入 Postgres + Dreaming 入队（Redis / Postgres）
 6. 校验失败 → 反馈给 Supervisor 重试
 7. 循环直至 complete / abort / 超时 / 超轮数
+8. Dreaming Worker 异步消费队列 → 更新用户记忆（version +1）
 ```
 
 ---
@@ -98,6 +103,11 @@ src/herness/
 ├── redis/
 │   ├── queue.py                # Dreaming 队列
 │   └── cache.py                # 记忆 / 任务缓存
+├── dreaming/
+│   ├── app.py                  # Dreaming Worker 入口
+│   ├── worker.py               # 队列消费者
+│   ├── synthesizer.py          # LLM 记忆合成
+│   └── merge.py                # 增量合并逻辑
 └── observability/
     └── logging.py              # 结构化日志
 ```
@@ -137,10 +147,23 @@ src/herness/
 | `get_task_context` | Postgres | ✅ |
 | `query_beliefs` | Postgres + 字符串匹配 | ✅ |
 | `write_task_result` | Postgres | ✅ |
-| `enqueue_dreaming_job` | Redis List | ✅ |
+| `enqueue_dreaming_job` | Redis List / Postgres | ✅ |
+| `get_task_result` / `save_pre_synthesized_memory` | Postgres | ✅ |
 | InMemory 回退（无 DSN） | 内存 | ✅ |
 
 配置 `POSTGRES_DSN` 启用 Postgres；配置 `REDIS_URL` 启用 Redis 队列与缓存。两者可组合使用。
+
+### Dreaming 离线管线
+
+| 能力 | 状态 |
+|------|------|
+| 任务完成后入队 | ✅ 已实现 |
+| 独立 Worker 消费队列 | ✅ 已实现 |
+| LLM 增量合成记忆（version +1） | ✅ 已实现 |
+| 提炼事实写入 beliefs 表 | ✅ 已实现 |
+| Redis 记忆缓存失效 | ✅ 已实现 |
+
+队列来源：配置 `REDIS_URL` 时使用 Redis List（`BRPOP`）；否则回退到 Postgres `dreaming_jobs` 表轮询出队。**Dreaming Worker 需配置 `POSTGRES_DSN`** 以跨进程读写 `task_results` 与 `memories`。
 
 ### LLM 后端
 
@@ -153,12 +176,13 @@ src/herness/
 | DeepSeek / Moonshot 等 | `openai_compatible` | 改 `LLM_BASE_URL` |
 | Anthropic Claude | `anthropic` | `claude-sonnet-4-6` 等 |
 
-### 离线管线（规划中）
+### Hereness 信念库（规划中）
 
 | 组件 | 状态 |
 |------|------|
-| Dreaming（记忆合成） | ⚠️ 队列入 Redis，消费者待实现 |
-| Hereness（信念冲突消歧） | ❌ 仅简单字符串匹配 |
+| 字符串匹配检索 | ✅ 已实现 |
+| 全文 / 向量语义检索 | ❌ 待实现 |
+| 冲突检测与消歧 | ❌ 待实现 |
 
 ---
 
@@ -168,8 +192,8 @@ src/herness/
 
 - Python >= 3.11
 - LLM 后端（本地 vLLM 或云端 API）
-- PostgreSQL（可选，持久化）
-- Redis 5.x+（可选，队列与缓存）
+- PostgreSQL（Dreaming 与持久化推荐；API 生产环境建议启用）
+- Redis 5.x+（可选，Dreaming 队列与记忆缓存）
 
 ### 2. 安装
 
@@ -194,8 +218,11 @@ LLM_BASE_URL=http://localhost:8000/v1
 # Postgres — 留空则用内存中台
 POSTGRES_DSN=postgresql://postgres:your_password@localhost:5432/herness
 
-# Redis — 留空则 Dreaming 队列入内存、任务状态存进程内
+# Redis — 留空则 Dreaming 队列入 Postgres / 内存，任务状态存进程内
 REDIS_URL=redis://localhost:6379
+
+# Dreaming 离线记忆合成
+DREAMING_ENABLED=true
 ```
 
 首次连接 Postgres 时会自动执行 `schema.sql` 建表。
@@ -232,7 +259,26 @@ curl -X POST http://localhost:8080/v1/tasks `
 curl http://localhost:8080/v1/tasks/{task_id}
 ```
 
-### 6. 运行测试
+### 6. 运行 Dreaming Worker
+
+在 API 服务之外，**另开终端**启动离线记忆合成消费者：
+
+```powershell
+.\run-dreaming.ps1
+# 或
+py -3.11 -m herness.dreaming.app
+```
+
+典型部署：**终端 1** 跑 API，**终端 2** 跑 Dreaming Worker。任务校验通过后，Worker 会从队列取出 job，读取 `task_results`，经 LLM 合成后更新 `memories`（version +1）并写入新 `beliefs`。
+
+验证记忆是否更新（需 Postgres）：
+
+```powershell
+# 提交任务并完成后再查 memories 表
+# SELECT user_id, version, summary FROM memories WHERE user_id = 'u1';
+```
+
+### 7. 运行测试
 
 ```powershell
 py -3.11 -m pytest
@@ -270,6 +316,9 @@ py -3.11 -m pytest tests/test_middleware_postgres.py tests/test_middleware_redis
 | `REDIS_URL` | （空） | Redis 连接地址 |
 | `REDIS_MEMORY_TTL_SECONDS` | `3600` | 记忆缓存 TTL |
 | `REDIS_TASK_TTL_SECONDS` | `86400` | 任务状态 TTL |
+| `DREAMING_ENABLED` | `false` | 是否启用 Dreaming（Worker 可独立启动） |
+| `DREAMING_TEMPERATURE` | `0.2` | Dreaming 记忆合成温度 |
+| `DREAMING_POLL_TIMEOUT_SECONDS` | `5` | 队列阻塞出队超时（秒） |
 
 完整配置见 [`.env.example`](.env.example)。
 
@@ -295,8 +344,8 @@ Worker 系统 prompt 明确声明不可见全局记忆；调度器在调用 Work
 
 ## 当前限制
 
-- **Dreaming 消费者未实现**：任务已入 Redis 队列，离线合成逻辑待开发
 - **信念库简陋**：字符串包含匹配，非语义/向量检索
+- **Dreaming 依赖 Postgres**：跨进程读写任务结果与记忆；纯内存模式仅适合单进程调试
 - **Redis 5.x 需 RESP2**：客户端已适配，无需额外配置
 - **单进程 API**：多实例部署需依赖 Redis 任务存储
 

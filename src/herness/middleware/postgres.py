@@ -127,6 +127,75 @@ class PostgresMiddleware:
             task_id,
         )
 
+    async def get_task_result(self, user_id: str, task_id: str) -> WorkerOutput | None:
+        row = await self._pool.fetchrow(
+            "SELECT output FROM task_results WHERE task_id = $1 AND user_id = $2",
+            task_id,
+            user_id,
+        )
+        if row is None:
+            return None
+        output = row["output"]
+        if isinstance(output, str):
+            output = json.loads(output)
+        return WorkerOutput.model_validate(output)
+
+    async def save_pre_synthesized_memory(self, memory: PreSynthesizedMemory) -> None:
+        await self.seed_memory(
+            memory.user_id,
+            memory.summary,
+            memory.slices,
+            version=memory.version,
+        )
+
+    async def dequeue_dreaming_job(self, *, timeout: int = 0) -> tuple[str, str] | None:
+        """原子出队一条 pending 任务；timeout>0 时在超时前轮询。"""
+        import asyncio
+
+        poll = 0.2
+        deadline = asyncio.get_running_loop().time() + timeout if timeout > 0 else None
+        while True:
+            row = await self._pool.fetchrow(
+                """
+                UPDATE dreaming_jobs
+                SET status = 'processing'
+                WHERE id = (
+                    SELECT id FROM dreaming_jobs
+                    WHERE status = 'pending'
+                    ORDER BY id
+                    LIMIT 1
+                    FOR UPDATE SKIP LOCKED
+                )
+                RETURNING user_id, task_id
+                """
+            )
+            if row is not None:
+                return row["user_id"], row["task_id"]
+            if deadline is None:
+                return None
+            if asyncio.get_running_loop().time() >= deadline:
+                return None
+            await asyncio.sleep(poll)
+
+    async def mark_dreaming_job_done(
+        self,
+        user_id: str,
+        task_id: str,
+        *,
+        success: bool = True,
+    ) -> None:
+        status = "done" if success else "failed"
+        await self._pool.execute(
+            """
+            UPDATE dreaming_jobs
+            SET status = $3
+            WHERE user_id = $1 AND task_id = $2
+            """,
+            user_id,
+            task_id,
+            status,
+        )
+
     # ── 数据维护（测试 / 管理用）──
 
     async def seed_memory(
