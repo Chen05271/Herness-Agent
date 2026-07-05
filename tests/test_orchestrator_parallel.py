@@ -2,7 +2,6 @@
 
 from unittest.mock import MagicMock
 
-import pytest
 
 from herness.models.critic import CriticOutput
 from herness.models.supervisor import SupervisorAction, SupervisorOutput
@@ -153,14 +152,17 @@ async def test_delegate_without_instructions_fails(
     mock_agents: tuple[MagicMock, MagicMock, MagicMock],
 ) -> None:
     supervisor, _, _ = mock_agents
-    supervisor.run.return_value = FakeRunResult(
+
+    def bad_run(*args, **kwargs):
+        # 模拟 PydanticAI 解析无效 delegate 输出时抛出的校验错误
         SupervisorOutput(
             action=SupervisorAction.DELEGATE,
             reasoning="空指令",
         )
-    )
+
+    supervisor.run.side_effect = bad_run
 
     result = await orchestrator.run(TaskRequest(user_id="u1", input="bad"))
 
     assert result.status == TaskStatus.FAILED
-    assert "task_instruction" in result.error
+    assert "task_instruction" in result.error or "ValidationError" in result.error

@@ -1,0 +1,494 @@
+openapi: 3.1.0
+info:
+  title: Herness Agri-Commerce BFF
+  version: 1.0.0
+  description: |
+    智慧农业电商只读 BFF 契约。Herness Worker 工具通过 HttpAgriCommerceClient 调用。
+    农场调度（Kafka/ROS2/区块链）由电商平台聚合后暴露，Herness 不直连执行链。
+
+servers:
+  - url: https://api.farm-commerce.example/v1
+    description: 生产环境（示例）
+  - url: http://localhost:9000/v1
+    description: 本地 BFF
+
+security:
+  - bearerAuth: []
+
+paths:
+  /orders:
+    get:
+      operationId: listOrders
+      summary: 用户订单列表
+      parameters:
+        - $ref: "#/components/parameters/UserIdHeader"
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum:
+              - pending_pick
+              - picking
+              - picked
+              - packed
+              - shipping
+              - delivered
+              - cancelled
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 10
+            maximum: 50
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrderListResponse"
+
+  /orders/{order_id}:
+    get:
+      operationId: getOrder
+      summary: 订单详情
+      parameters:
+        - $ref: "#/components/parameters/UserIdHeader"
+        - name: order_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrderSummary"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /orders/{order_id}/timeline:
+    get:
+      operationId: getOrderTimeline
+      summary: 订单全链路时间线（C2F 待采摘→签收）
+      parameters:
+        - $ref: "#/components/parameters/UserIdHeader"
+        - name: order_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrderTimeline"
+
+  /lots/{batch_id}:
+    get:
+      operationId: getLot
+      summary: 批次质检信息（糖度/pH/等级/采收区）
+      parameters:
+        - name: batch_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LotInfo"
+
+  /products/search:
+    get:
+      operationId: searchProduce
+      summary: 可售商品搜索
+      parameters:
+        - name: q
+          in: query
+          schema:
+            type: string
+        - name: category
+          in: query
+          schema:
+            type: string
+        - name: region
+          in: query
+          schema:
+            type: string
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 10
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProductSearchResponse"
+
+  /products/{sku}/availability:
+    get:
+      operationId: getAvailability
+      summary: C2F 可售量与预计采摘窗口
+      parameters:
+        - name: sku
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AvailabilityInfo"
+
+  /trace/{trace_id}:
+    get:
+      operationId: traceBatch
+      summary: 溯源聚合视图（链哈希 + IPFS + 生命周期）
+      parameters:
+        - name: trace_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TraceRecord"
+
+  /live/{room_id}/inventory:
+    get:
+      operationId: getLiveInventoryHint
+      summary: 直播间可售库存快照
+      parameters:
+        - name: room_id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: q
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LiveInventoryResponse"
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+
+  parameters:
+    UserIdHeader:
+      name: X-User-Id
+      in: header
+      required: true
+      schema:
+        type: string
+      description: 用户数据隔离，与 Herness TaskRequest.user_id 一致
+
+  responses:
+    NotFound:
+      description: 资源不存在
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+
+  schemas:
+    OrderStatus:
+      type: string
+      enum:
+        - pending_pick
+        - picking
+        - picked
+        - packed
+        - shipping
+        - delivered
+        - cancelled
+
+    OrderSummary:
+      type: object
+      required:
+        - order_id
+        - user_id
+        - status
+        - sku
+        - sku_name
+        - trace_id
+        - amount_cny
+        - created_at
+      properties:
+        order_id:
+          type: string
+        user_id:
+          type: string
+        status:
+          $ref: "#/components/schemas/OrderStatus"
+        sku:
+          type: string
+        sku_name:
+          type: string
+        trace_id:
+          type: string
+        batch_id:
+          type: string
+          nullable: true
+        amount_cny:
+          type: number
+        estimated_pick_start:
+          type: string
+          format: date-time
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+
+    OrderListResponse:
+      type: object
+      required:
+        - orders
+        - total
+      properties:
+        orders:
+          type: array
+          items:
+            $ref: "#/components/schemas/OrderSummary"
+        total:
+          type: integer
+
+    TimelineEvent:
+      type: object
+      required:
+        - event_type
+        - occurred_at
+        - title
+      properties:
+        event_type:
+          type: string
+        occurred_at:
+          type: string
+          format: date-time
+        title:
+          type: string
+        detail:
+          type: string
+        robot_id:
+          type: string
+          nullable: true
+        photo_url:
+          type: string
+          nullable: true
+        logistics_no:
+          type: string
+          nullable: true
+
+    OrderTimeline:
+      type: object
+      required:
+        - order_id
+        - trace_id
+        - status
+        - events
+      properties:
+        order_id:
+          type: string
+        trace_id:
+          type: string
+        status:
+          $ref: "#/components/schemas/OrderStatus"
+        events:
+          type: array
+          items:
+            $ref: "#/components/schemas/TimelineEvent"
+
+    LotInfo:
+      type: object
+      required:
+        - batch_id
+        - sku
+        - sku_name
+        - grade
+        - weight_g
+        - harvest_zone
+      properties:
+        batch_id:
+          type: string
+        sku:
+          type: string
+        sku_name:
+          type: string
+        grade:
+          type: string
+        weight_g:
+          type: integer
+        brix:
+          type: number
+          nullable: true
+        ph:
+          type: number
+          nullable: true
+        harvest_zone:
+          type: string
+        harvested_at:
+          type: string
+          format: date-time
+          nullable: true
+        robot_id:
+          type: string
+          nullable: true
+
+    ProductSearchHit:
+      type: object
+      required:
+        - sku
+        - name
+        - region
+        - grade
+        - price_cny
+        - category
+      properties:
+        sku:
+          type: string
+        name:
+          type: string
+        region:
+          type: string
+        grade:
+          type: string
+        price_cny:
+          type: number
+        category:
+          type: string
+
+    ProductSearchResponse:
+      type: object
+      required:
+        - items
+        - total
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/ProductSearchHit"
+        total:
+          type: integer
+
+    AvailabilityInfo:
+      type: object
+      required:
+        - sku
+        - sku_name
+        - available
+      properties:
+        sku:
+          type: string
+        sku_name:
+          type: string
+        available:
+          type: boolean
+        c2f_mode:
+          type: boolean
+          default: true
+        remaining_slots:
+          type: integer
+        estimated_pick_start:
+          type: string
+          format: date-time
+          nullable: true
+        message:
+          type: string
+
+    TraceRecord:
+      type: object
+      required:
+        - trace_id
+        - order_id
+        - batch_id
+        - events
+      properties:
+        trace_id:
+          type: string
+        order_id:
+          type: string
+        batch_id:
+          type: string
+        chain_hash:
+          type: string
+          nullable: true
+        ipfs_cid:
+          type: string
+          nullable: true
+        events:
+          type: array
+          items:
+            $ref: "#/components/schemas/TimelineEvent"
+        lot:
+          $ref: "#/components/schemas/LotInfo"
+          nullable: true
+
+    LiveInventoryItem:
+      type: object
+      required:
+        - sku
+        - name
+        - available
+        - remaining_slots
+      properties:
+        sku:
+          type: string
+        name:
+          type: string
+        available:
+          type: boolean
+        remaining_slots:
+          type: integer
+        message:
+          type: string
+
+    LiveInventoryResponse:
+      type: object
+      required:
+        - room_id
+        - items
+      properties:
+        room_id:
+          type: string
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/LiveInventoryItem"
+        query:
+          type: string
+
+    ErrorResponse:
+      type: object
+      required:
+        - error
+      properties:
+        error:
+          type: string
+        code:
+          type: string

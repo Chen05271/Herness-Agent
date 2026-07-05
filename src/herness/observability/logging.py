@@ -2,6 +2,7 @@
 
 import json
 import logging
+import sys
 from contextvars import ContextVar
 from datetime import datetime, timezone
 from typing import Any
@@ -39,3 +40,18 @@ def log_event(
         payload["round_index"] = round_index
     payload.update(fields)
     logger.log(level, json.dumps(payload, ensure_ascii=False))
+
+
+def configure_logging(*, structured: bool = False, level: int = logging.INFO) -> None:
+    """配置根日志：structured=True 时输出纯 JSON 行（配合 log_event）。"""
+    root = logging.getLogger()
+    root.handlers.clear()
+    handler = logging.StreamHandler(sys.stderr)
+    if structured:
+        handler.setFormatter(logging.Formatter("%(message)s"))
+    else:
+        handler.setFormatter(
+            logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+        )
+    root.addHandler(handler)
+    root.setLevel(level)

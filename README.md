@@ -2,7 +2,7 @@
 
 多 Agent 协作框架：**PydanticAI 节点层 + 手写调度器 + 数据中台协议**。
 
-> 版本：0.1.0 · Python >= 3.11 · 当前阶段：**可运行 Demo + HTTP API + Postgres/Redis 持久化 + Dreaming 离线记忆合成**
+> 版本：0.1.0 · Python >= 3.11 · 当前阶段：**可运行 Demo + HTTP API + Postgres/Redis 持久化 + Dreaming + Hereness v2 + 会话多轮 + Worker 工具链 + 农业电商 BFF 集成**
 
 ---
 
@@ -83,23 +83,39 @@ src/herness/
 │   ├── registry.py             # Agent 注册表
 │   ├── supervisor.py           # 总管 Agent
 │   ├── worker.py               # 执行 Agent
-│   └── critic.py               # 校验 Agent
+│   ├── critic.py               # 校验 Agent
+│   ├── critic_validation.py    # Critic 后校验（信念库对齐）
+│   ├── tools.py                # Worker 外部工具实现
+│   ├── tool_policy.py          # 工具权限策略（三层交集）
+│   └── tool_trace.py           # 工具调用记录提取
 ├── api/
 │   ├── app.py                  # FastAPI 应用
 │   ├── routes.py               # /v1/tasks 路由
 │   ├── schemas.py              # 请求/响应模型
-│   └── store.py                # 任务状态（内存 / Redis）
+│   ├── store.py                # 任务状态（内存 / Redis）
+│   ├── security.py             # API Key 鉴权与 rate limit
+│   └── live.py                 # SSE 实时消息中心
 ├── orchestrator/
-│   └── scheduler.py            # 手写调度器（核心状态机）
+│   ├── scheduler.py            # 手写调度器（核心状态机）
+│   └── cancellation.py         # 任务取消令牌
 ├── middleware/
 │   ├── protocol.py             # 中台协议
 │   ├── memory.py               # 预合成记忆模型
 │   ├── beliefs.py              # 信念匹配逻辑
+│   ├── embeddings.py           # Hereness v2 向量嵌入
+│   ├── session.py              # 会话历史读写
 │   ├── stub.py                 # InMemoryMiddleware
 │   ├── postgres.py             # Postgres 持久化
 │   ├── redis_augment.py        # Redis 增强层
 │   ├── factory.py              # 中台工厂
 │   └── schema.sql              # Postgres 表结构
+├── integrations/
+│   └── agri_commerce/          # 智慧农业电商 BFF（mock / HTTP）
+│       ├── protocol.py         # 客户端协议
+│       ├── mock_client.py      # 本地样例数据
+│       ├── http_client.py      # 真实 API 对接
+│       ├── tools.py            # Worker 只读工具
+│       └── openapi.yaml        # BFF 接口规范
 ├── redis/
 │   ├── queue.py                # Dreaming 队列
 │   └── cache.py                # 记忆 / 任务缓存
@@ -109,7 +125,8 @@ src/herness/
 │   ├── synthesizer.py          # LLM 记忆合成
 │   └── merge.py                # 增量合并逻辑
 └── observability/
-    └── logging.py              # 结构化日志
+    ├── logging.py              # 结构化日志 + trace_id
+    └── metrics.py              # 运行时指标注册表
 ```
 
 ---
@@ -132,12 +149,70 @@ src/herness/
 
 | 端点 | 说明 |
 |------|------|
-| `GET /health` | 健康检查 |
+| `GET /health` | 健康检查（无需鉴权） |
+| `GET /metrics` | 运行时指标快照（无需鉴权） |
 | `POST /v1/tasks` | 提交任务（202，后台异步执行） |
 | `GET /v1/tasks/{id}` | 查询任务状态与结果 |
 | `GET /v1/tasks/{id}/messages` | 查询审计日志 |
+| `GET /v1/tasks/{id}/stream` | SSE 流式推送审计日志（长任务实时观测） |
+| `DELETE /v1/tasks/{id}` | 取消 PENDING / RUNNING 任务 |
 
 任务状态存储：配置 `REDIS_URL` 后自动切换为 Redis，否则使用进程内内存。
+
+| 安全能力 | 状态 |
+|------|------|
+| API Key 鉴权（`Authorization: Bearer` / `X-API-Key`） | ✅ 已实现 |
+| 用户级 rate limit（`POST /v1/tasks`） | ✅ 已实现 |
+| 输入/output 内容审核钩子 | ❌ 待实现 |
+
+配置 `API_KEY` 后 `/v1/*` 路由需携带密钥；留空则开发模式无鉴权。`RATE_LIMIT_PER_USER` 按请求体中的 `user_id` 限流（0 表示不限）。
+
+### Worker 专业化路由
+
+| Worker 类型 | 用途 |
+|-------------|------|
+| `default` | 通用执行 |
+| `research` | 调研与信息归纳 |
+| `code` | 代码编写与解释 |
+| `summary` | 摘要压缩 |
+
+Supervisor 可通过 `worker_types` 与 `task_instructions` 并行路由；调度器受 `MAX_PARALLEL_WORKERS` 限制。
+
+### Worker 外部工具
+
+| 工具 | 配置开关 | 说明 |
+|------|----------|------|
+| `fetch_task_context` | 始终可用 | 从中台只读任务上下文 |
+| `http_request` | `WORKER_TOOLS_HTTP_ENABLED` | HTTP/HTTPS 请求，响应体可截断 |
+| `read_text_file` | `WORKER_TOOLS_FILE_ENABLED` + `WORKER_TOOLS_FILE_BASE_DIR` | 读取指定目录内文本文件（防目录穿越） |
+| `run_python_code` | `WORKER_TOOLS_CODE_ENABLED` | 子进程执行 Python 片段（生产环境谨慎开启） |
+
+文件与代码工具默认关闭；HTTP 工具默认开启。工具错误以文本形式返回给 LLM，不中断调度。
+
+工具权限由 **全局 Settings → 中台 metadata → 任务 metadata** 三层交集决定（`tool_policy.py`）；Critic 可校验 Worker 工具调用结果（`tool_trace.py`）。
+
+### 智慧农业电商 BFF 集成
+
+可选集成模块，为 Worker 提供果园/电商只读查询能力；`mock` 模式内置样例数据，无需外部服务。
+
+| 工具 | 说明 |
+|------|------|
+| `get_order` / `list_orders` | 订单查询 |
+| `get_order_timeline` | 订单履约时间线 |
+| `get_lot` / `trace_batch` | 批次与溯源 |
+| `search_produce` / `get_availability` | 商品搜索与库存 |
+| `get_live_inventory_hint` | 直播间库存提示 |
+
+启用方式：
+
+```env
+AGRI_COMMERCE_ENABLED=true
+AGRI_COMMERCE_MODE=mock          # mock | http
+# AGRI_COMMERCE_BASE_URL=http://localhost:9000/v1
+# AGRI_COMMERCE_API_KEY=
+```
+
+`mock` 模式下会自动注入农业领域信念种子（`beliefs_seed.json`），便于 Hereness 校验演示。对接真实 API 时切换为 `http` 并配置 `AGRI_COMMERCE_BASE_URL`。
 
 ### 数据中台（Middleware）
 
@@ -145,9 +220,10 @@ src/herness/
 |------|------|------|
 | `get_pre_synthesized_memory` | Postgres + Redis 缓存 | ✅ |
 | `get_task_context` | Postgres | ✅ |
-| `query_beliefs` | Postgres + 字符串匹配 | ✅ |
+| `query_beliefs` | Postgres FTS + 词项匹配 | ✅ |
 | `write_task_result` | Postgres | ✅ |
 | `enqueue_dreaming_job` | Redis List / Postgres | ✅ |
+| `get_session_history` | Postgres `task_results.metadata` | ✅ |
 | `get_task_result` / `save_pre_synthesized_memory` | Postgres | ✅ |
 | InMemory 回退（无 DSN） | 内存 | ✅ |
 
@@ -162,6 +238,7 @@ src/herness/
 | LLM 增量合成记忆（version +1） | ✅ 已实现 |
 | 提炼事实写入 beliefs 表 | ✅ 已实现 |
 | Redis 记忆缓存失效 | ✅ 已实现 |
+| 失败重试（可配置次数与退避） | ✅ 已实现 |
 
 队列来源：配置 `REDIS_URL` 时使用 Redis List（`BRPOP`）；否则回退到 Postgres `dreaming_jobs` 表轮询出队。**Dreaming Worker 需配置 `POSTGRES_DSN`** 以跨进程读写 `task_results` 与 `memories`。
 
@@ -176,13 +253,43 @@ src/herness/
 | DeepSeek / Moonshot 等 | `openai_compatible` | 改 `LLM_BASE_URL` |
 | Anthropic Claude | `anthropic` | `claude-sonnet-4-6` 等 |
 
-### Hereness 信念库（规划中）
+### Hereness 信念库
 
 | 组件 | 状态 |
 |------|------|
-| 字符串匹配检索 | ✅ 已实现 |
-| 全文 / 向量语义检索 | ❌ 待实现 |
-| 冲突检测与消歧 | ❌ 待实现 |
+| 字符串匹配检索（`HERENESS_ENABLED=false`） | ✅ 已实现 |
+| 全文检索 + 词项 ILIKE（Postgres `tsvector`） | ✅ 已实现 |
+| 启发式矛盾检测（极性相反） | ✅ 已实现 |
+| Critic 后校验对齐 `FactCheckItem` | ✅ 已实现 |
+| 调度器强制信念库查询（不依赖 LLM tool） | ✅ 已实现 |
+| 向量语义检索（pgvector + Embeddings API） | ✅ 已实现 |
+| 冲突消歧与置信度衰减 | ✅ 已实现 |
+
+- **Hereness 校验**：`HERENESS_ENABLED=true` 时，调度器在 Critic LLM 返回后**强制**查询信念库并对齐 `fact_checks`；LLM 是否调用 `check_beliefs` tool 不影响最终结果
+
+### 会话多轮（Session）
+
+| 能力 | 状态 |
+|------|------|
+| `session_id` 关联前序任务 | ✅ 已实现 |
+| `get_session_history` 中台接口 | ✅ 已实现 |
+| Supervisor 注入会话历史 | ✅ 已实现 |
+| 任务完成写入 session 元数据 | ✅ 已实现 |
+
+同一对话请在 API 请求中传递相同的 `session_id`；Supervisor 会自动读取最近 N 条前序任务摘要（默认 5，见 `SESSION_HISTORY_LIMIT`）。
+
+### 可观测性
+
+| 能力 | 状态 |
+|------|------|
+| JSON 结构化日志 + `trace_id` | ✅ 已实现 |
+| 任务终态 / 轮数 / 耗时指标 | ✅ 已实现 |
+| Critic 驳回率 / 单步重试计数 | ✅ 已实现 |
+| Dreaming 成功/失败计数 | ✅ 已实现 |
+| `GET /metrics` 指标端点 | ✅ 已实现 |
+| OpenTelemetry span 集成 | ❌ 待实现 |
+
+设置 `STRUCTURED_LOGGING=true` 后，调度链路日志以纯 JSON 行输出，便于 ELK / Loki 采集。`trace_id` 等于 `task_id`，贯穿 Orchestrator 与 Dreaming Worker。
 
 ---
 
@@ -223,6 +330,17 @@ REDIS_URL=redis://localhost:6379
 
 # Dreaming 离线记忆合成
 DREAMING_ENABLED=true
+
+# Hereness 信念库深度校验
+HERENESS_ENABLED=true
+# Hereness v2 向量语义检索（需 Postgres 安装 pgvector）
+# HERENESS_VECTOR_ENABLED=true
+# EMBEDDING_MODEL=text-embedding-3-small
+# EMBEDDING_DIMENSIONS=1536
+
+# 智慧农业电商 BFF（可选）
+# AGRI_COMMERCE_ENABLED=true
+# AGRI_COMMERCE_MODE=mock
 ```
 
 首次连接 Postgres 时会自动执行 `schema.sql` 建表。
@@ -250,14 +368,35 @@ py -3.11 -m herness.api.app
 ```powershell
 curl -X POST http://localhost:8080/v1/tasks `
   -H "Content-Type: application/json" `
-  -d '{"user_id":"u1","input":"你好"}'
+  -H "Authorization: Bearer your-api-key" `
+  -d '{"user_id":"u1","session_id":"s1","input":"你好"}'
 ```
+
+生产环境请设置 `API_KEY`；开发模式留空则无需携带密钥。
+
+连续对话时保持 `session_id` 不变，Supervisor 会读取同 session 的前序任务摘要。
 
 **查询状态：**
 
 ```powershell
 curl http://localhost:8080/v1/tasks/{task_id}
 ```
+
+**SSE 流式观测（长任务）：**
+
+```powershell
+curl -N http://localhost:8080/v1/tasks/{task_id}/stream
+```
+
+每条 `data:` 行为 JSON 审计消息；任务结束时额外推送 `{"event":"task_finished","status":"..."}`。
+
+**取消任务：**
+
+```powershell
+curl -X DELETE http://localhost:8080/v1/tasks/{task_id}
+```
+
+仅 `pending` / `running` 可取消；已终态返回 409。
 
 ### 6. 运行 Dreaming Worker
 
@@ -282,6 +421,7 @@ py -3.11 -m herness.dreaming.app
 
 ```powershell
 py -3.11 -m pytest
+# 当前 123 个用例；7 个 Postgres/Redis 集成测试需本地服务
 ```
 
 集成测试（可选，需本地服务）：
@@ -310,8 +450,12 @@ py -3.11 -m pytest tests/test_middleware_postgres.py tests/test_middleware_redis
 | `TASK_TIMEOUT_SECONDS` | `600` | 整任务超时（秒） |
 | `MAX_RETRIES_PER_STEP` | `2` | 单步最大重试次数 |
 | `MAX_PARALLEL_WORKERS` | `4` | 单轮并行 Worker 上限 |
+| `SESSION_HISTORY_LIMIT` | `5` | Supervisor 注入的同 session 前序任务条数 |
 | `API_HOST` | `0.0.0.0` | API 监听地址 |
 | `API_PORT` | `8080` | API 监听端口 |
+| `API_KEY` | （空） | API Key；留空则不鉴权 |
+| `RATE_LIMIT_PER_USER` | `0` | 每 user_id 窗口内最大提交数；0 不限 |
+| `RATE_LIMIT_WINDOW_SECONDS` | `60` | rate limit 窗口（秒） |
 | `POSTGRES_DSN` | （空） | PostgreSQL 连接串 |
 | `REDIS_URL` | （空） | Redis 连接地址 |
 | `REDIS_MEMORY_TTL_SECONDS` | `3600` | 记忆缓存 TTL |
@@ -319,6 +463,32 @@ py -3.11 -m pytest tests/test_middleware_postgres.py tests/test_middleware_redis
 | `DREAMING_ENABLED` | `false` | 是否启用 Dreaming（Worker 可独立启动） |
 | `DREAMING_TEMPERATURE` | `0.2` | Dreaming 记忆合成温度 |
 | `DREAMING_POLL_TIMEOUT_SECONDS` | `5` | 队列阻塞出队超时（秒） |
+| `DREAMING_MAX_RETRIES` | `3` | 单条 Dreaming 任务失败后最大重试次数 |
+| `DREAMING_RETRY_BACKOFF_SECONDS` | `2.0` | 重试间隔基数（秒），按 attempt 线性递增 |
+| `WORKER_TOOLS_HTTP_ENABLED` | `true` | Worker HTTP 工具开关 |
+| `WORKER_TOOLS_HTTP_MAX_BYTES` | `65536` | HTTP 响应体上限（字节） |
+| `WORKER_TOOLS_FILE_ENABLED` | `false` | Worker 文件读取工具开关 |
+| `WORKER_TOOLS_FILE_BASE_DIR` | （空） | 文件工具允许读取的根目录 |
+| `WORKER_TOOLS_FILE_MAX_BYTES` | `65536` | 单文件读取上限（字节） |
+| `WORKER_TOOLS_CODE_ENABLED` | `false` | Worker Python 代码执行开关 |
+| `WORKER_TOOLS_CODE_TIMEOUT_SECONDS` | `10` | 代码执行超时（秒） |
+| `HERENESS_ENABLED` | `false` | Hereness 信念库深度校验 |
+| `HERENESS_VECTOR_ENABLED` | `false` | Hereness v2 pgvector 语义检索 |
+| `EMBEDDING_MODEL` | `text-embedding-3-small` | Embeddings 模型 |
+| `EMBEDDING_DIMENSIONS` | `1536` | 向量维度（须与 DB 列一致） |
+| `EMBEDDING_BASE_URL` | （空） | Embeddings API；留空沿用 `LLM_BASE_URL` |
+| `EMBEDDING_API_KEY` | （空） | Embeddings Key；留空沿用 `LLM_API_KEY` |
+| `HERENESS_VECTOR_TOP_K` | `10` | 向量检索条数上限 |
+| `HERENESS_VECTOR_MIN_SIMILARITY` | `0.5` | 余弦相似度阈值 |
+| `HERENESS_CONFLICT_DECAY_FACTOR` | `0.5` | 矛盾信念置信度衰减系数 |
+| `HERENESS_SUPERSEDED_THRESHOLD` | `0.3` | 低于此置信度的信念标记为 superseded |
+| `STRUCTURED_LOGGING` | `false` | 纯 JSON 行日志（配合 log_event） |
+| `METRICS_ENABLED` | `true` | 是否采集运行时指标 |
+| `AGRI_COMMERCE_ENABLED` | `false` | 农业电商 BFF 工具开关 |
+| `AGRI_COMMERCE_MODE` | `mock` | `mock` 本地样例 / `http` 对接真实 API |
+| `AGRI_COMMERCE_BASE_URL` | （空） | BFF 根地址 |
+| `AGRI_COMMERCE_API_KEY` | （空） | BFF Bearer Token |
+| `AGRI_COMMERCE_TIMEOUT_SECONDS` | `30` | BFF HTTP 超时（秒） |
 
 完整配置见 [`.env.example`](.env.example)。
 
@@ -344,10 +514,16 @@ Worker 系统 prompt 明确声明不可见全局记忆；调度器在调用 Work
 
 ## 当前限制
 
-- **信念库简陋**：字符串包含匹配，非语义/向量检索
+- **内容审核与记忆加密**：输入/output 审核钩子、敏感记忆字段加密尚未实现
 - **Dreaming 依赖 Postgres**：跨进程读写任务结果与记忆；纯内存模式仅适合单进程调试
 - **Redis 5.x 需 RESP2**：客户端已适配，无需额外配置
 - **单进程 API**：多实例部署需依赖 Redis 任务存储
+
+### 重试语义
+
+- **Agent 层**（PydanticAI `retries`）：LLM 结构化输出格式错误时自动重试
+- **调度器层**（Orchestrator `_run_step_with_retry`）：网络、超时等瞬时错误时重试
+- 两者共用 `MAX_RETRIES_PER_STEP` 配置，职责不同、互不替代
 
 ---
 

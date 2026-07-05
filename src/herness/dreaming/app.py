@@ -10,11 +10,9 @@ from herness.config import get_settings
 from herness.dreaming.synthesizer import MemorySynthesizer
 from herness.dreaming.worker import DreamingWorker
 from herness.middleware.factory import close_middleware, create_middleware
+from herness.observability.logging import configure_logging
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-)
+configure_logging(structured=get_settings().structured_logging)
 logger = logging.getLogger(__name__)
 
 

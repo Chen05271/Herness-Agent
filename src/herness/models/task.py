@@ -21,6 +21,7 @@ class TaskStatus(StrEnum):
     FAILED = "failed"         # 失败
     TIMEOUT = "timeout"       # 超时
     ABORTED = "aborted"       # 被总管中止
+    CANCELLED = "cancelled"   # 被 API / 用户主动取消
 
 
 class AgentRole(StrEnum):

@@ -7,19 +7,16 @@
 """
 
 import asyncio
-import logging
 import sys
 
 from herness.config import get_settings
 from herness.middleware.stub import InMemoryMiddleware
 from herness.middleware.memory import SynthesizedMemorySlice
 from herness.models.task import TaskRequest
+from herness.observability.logging import configure_logging
 from herness.orchestrator.scheduler import Orchestrator
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-)
+configure_logging(structured=get_settings().structured_logging)
 
 
 async def run_demo(user_input: str, user_id: str = "demo_user") -> None:

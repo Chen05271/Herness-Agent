@@ -2,7 +2,6 @@
 
 from unittest.mock import MagicMock
 
-import pytest
 
 from herness.models.critic import CriticOutput
 from herness.models.supervisor import SupervisorAction, SupervisorOutput

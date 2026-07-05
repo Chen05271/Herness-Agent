@@ -2,12 +2,13 @@
 
 from unittest.mock import MagicMock
 
-import pytest
 
 from herness.models.critic import CriticOutput
 from herness.models.supervisor import SupervisorAction, SupervisorOutput
 from herness.models.task import TaskRequest, TaskStatus
+from herness.middleware.stub import InMemoryMiddleware
 from herness.models.worker import WorkerOutput
+from herness.observability.metrics import reset_metrics_registry
 from herness.orchestrator.scheduler import Orchestrator
 from tests.conftest import FakeRunResult
 
@@ -184,3 +185,54 @@ async def test_persist_writes_to_middleware(
     assert result.status == TaskStatus.COMPLETED
     assert len(middleware.dreaming_queue) == 1
     assert middleware.dreaming_queue[0] == ("u1", result.task_id)
+
+
+async def test_orchestrator_records_metrics(
+    middleware: InMemoryMiddleware,
+    test_settings,
+    test_config,
+    mock_agents: tuple[MagicMock, MagicMock, MagicMock],
+) -> None:
+    """任务完成与 Critic 驳回应写入指标。"""
+    metrics = reset_metrics_registry()
+    supervisor, worker, critic = mock_agents
+
+    supervisor.run.side_effect = [
+        FakeRunResult(
+            SupervisorOutput(
+                action=SupervisorAction.DELEGATE,
+                reasoning="委派",
+                task_instruction="写内容",
+            )
+        ),
+        FakeRunResult(
+            SupervisorOutput(
+                action=SupervisorAction.COMPLETE,
+                reasoning="完成",
+                final_answer="OK",
+            )
+        ),
+    ]
+    worker.run.return_value = FakeRunResult(
+        WorkerOutput(content="内容", summary="摘要", needs_verification=True)
+    )
+    critic.run.side_effect = [
+        FakeRunResult(CriticOutput(passed=False, feedback="驳回")),
+        FakeRunResult(CriticOutput(passed=True, feedback="")),
+    ]
+
+    orchestrator = Orchestrator(
+        middleware=middleware,
+        settings=test_settings,
+        config=test_config,
+        supervisor=supervisor,
+        worker=worker,
+        critic=critic,
+        metrics=metrics,
+    )
+    result = await orchestrator.run(TaskRequest(user_id="u1", input="test"))
+
+    assert result.status == TaskStatus.COMPLETED
+    snapshot = metrics.snapshot()
+    assert snapshot["tasks_total"]["completed"] == 1
+    assert snapshot["critic_rejections_total"] == 1

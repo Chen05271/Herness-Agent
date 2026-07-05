@@ -1,0 +1,32 @@
+[
+  {
+    "fact": "本园采用 C2F（Customer-to-Farm）模式：有人下单才安排采摘，不提供现货秒发。",
+    "source": "farm_policy",
+    "confidence": 1.0
+  },
+  {
+    "fact": "鲜品质量理赔需在签收后 24 小时内提交，并附上开箱照片与问题描述。",
+    "source": "after_sales",
+    "confidence": 1.0
+  },
+  {
+    "fact": "溯源页中的糖度（°Brix）、pH、重量来自分拣设备实测，Agent 不得编造数值。",
+    "source": "traceability",
+    "confidence": 1.0
+  },
+  {
+    "fact": "有机、绿色、地理标志等认证表述必须以溯源页证书编号为准，不可超范围宣传。",
+    "source": "compliance",
+    "confidence": 1.0
+  },
+  {
+    "fact": "预计采摘时间为系统估算，受天气、机器人负载与订单队列影响，可能变动。",
+    "source": "c2f_sla",
+    "confidence": 0.95
+  },
+  {
+    "fact": "订单状态与机器人编号以电商平台订单时间线 API 返回为准，不可臆测。",
+    "source": "order_ops",
+    "confidence": 1.0
+  }
+]

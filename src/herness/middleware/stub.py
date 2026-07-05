@@ -1,24 +1,45 @@
 """内存桩实现 — 开发/测试用；生产环境配合 PostgresMiddleware + Redis 增强层。"""
 
+from datetime import datetime, timezone
 from typing import Any
 
-from herness.middleware.beliefs import match_beliefs
+from herness.middleware.beliefs import match_beliefs, resolve_belief_write_conflict
 from herness.middleware.memory import PreSynthesizedMemory, SynthesizedMemorySlice
+from herness.middleware.session import SessionHistoryEntry
 from herness.models.worker import WorkerOutput
 
 
 class InMemoryMiddleware:
     """基于 dict 的临时中台，演示权限边界与数据流。"""
 
-    def __init__(self) -> None:
+    def __init__(self, *, hereness_enabled: bool = False) -> None:
         # 用户 → 预合成记忆
         self._memories: dict[str, PreSynthesizedMemory] = {}
         # 用户 → 信念库（Hereness 占位）
         self._beliefs: dict[str, list[dict[str, Any]]] = {}
         # 任务 → 已写入结果
         self._task_results: dict[str, WorkerOutput] = {}
+        # 任务 → 元数据（含 session_id / input / final_answer）
+        self._task_metadata: dict[str, dict[str, Any]] = {}
+        # 任务 → 写入时间
+        self._task_created_at: dict[str, datetime] = {}
         # Dreaming 队列（占位）
         self._dreaming_queue: list[tuple[str, str]] = []
+        self._tool_policies: dict[tuple[str, str], list[str]] = {}
+        self._hereness_enabled = hereness_enabled
+        self._belief_id_counter = 0
+        self._conflict_decay_factor = 0.5
+        self._superseded_threshold = 0.3
+
+    def configure_hereness_conflict(
+        self,
+        *,
+        decay_factor: float = 0.5,
+        superseded_threshold: float = 0.3,
+    ) -> None:
+        """配置 Hereness v3 冲突衰减参数（测试 / 工厂注入）。"""
+        self._conflict_decay_factor = decay_factor
+        self._superseded_threshold = superseded_threshold
 
     # ── 只读接口（Worker / Critic 可用）──
 
@@ -32,7 +53,27 @@ class InMemoryMiddleware:
 
     async def query_beliefs(self, user_id: str, claims: list[str]) -> list[dict[str, Any]]:
         """从信念库检索与声明相关的条目。"""
-        return match_beliefs(self._beliefs.get(user_id, []), claims)
+        active = [
+            b for b in self._beliefs.get(user_id, [])
+            if b.get("status", "active") == "active"
+        ]
+        return match_beliefs(
+            active,
+            claims,
+            deep=self._hereness_enabled,
+        )
+
+    async def resolve_worker_tools(
+        self,
+        user_id: str,
+        task_id: str,
+    ) -> list[str] | None:
+        """内存桩默认返回 None，沿用全局 Settings。"""
+        return self._tool_policies.get((user_id, task_id))
+
+    def set_tool_policy(self, user_id: str, task_id: str, tools: list[str]) -> None:
+        """测试辅助：为中台设置任务级工具白名单。"""
+        self._tool_policies[(user_id, task_id)] = tools
 
     # ── 读写接口（仅调度器/总管）──
 
@@ -52,6 +93,39 @@ class InMemoryMiddleware:
     ) -> None:
         """写入已校验的任务结果。"""
         self._task_results[task_id] = worker_output
+        if metadata:
+            self._task_metadata[task_id] = dict(metadata)
+        self._task_created_at.setdefault(task_id, datetime.now(timezone.utc))
+
+    async def get_session_history(
+        self,
+        session_id: str,
+        *,
+        exclude_task_id: str | None = None,
+        limit: int = 5,
+    ) -> list[SessionHistoryEntry]:
+        """读取同 session 的前序任务摘要。"""
+        entries: list[SessionHistoryEntry] = []
+        for task_id, output in self._task_results.items():
+            if exclude_task_id and task_id == exclude_task_id:
+                continue
+            meta = self._task_metadata.get(task_id, {})
+            if meta.get("session_id") != session_id:
+                continue
+            answer = meta.get("final_answer") or output.summary or output.content
+            entries.append(
+                SessionHistoryEntry(
+                    task_id=task_id,
+                    input=str(meta.get("input", "")),
+                    answer=str(answer),
+                    created_at=self._task_created_at.get(task_id),
+                )
+            )
+
+        entries.sort(key=lambda item: item.created_at or datetime.min.replace(tzinfo=timezone.utc))
+        if limit > 0 and len(entries) > limit:
+            entries = entries[-limit:]
+        return entries
 
     async def enqueue_dreaming_job(self, user_id: str, task_id: str) -> None:
         """将任务加入 Dreaming 队列（占位，不实际执行）。"""
@@ -112,9 +186,36 @@ class InMemoryMiddleware:
         source: str = "manual",
         confidence: float = 1.0,
     ) -> None:
-        """预置信念库条目。"""
+        """预置信念库条目；Hereness 启用时自动处理冲突衰减。"""
+        existing = self._beliefs.get(user_id, [])
+        adjusted = confidence
+        status = "active"
+        if self._hereness_enabled:
+            adjusted, status, updates = resolve_belief_write_conflict(
+                fact,
+                confidence,
+                existing,
+                decay_factor=self._conflict_decay_factor,
+                superseded_threshold=self._superseded_threshold,
+            )
+            for update in updates:
+                for belief in existing:
+                    if belief.get("id") != update.get("id"):
+                        continue
+                    if "confidence" in update:
+                        belief["confidence"] = update["confidence"]
+                    if "status" in update:
+                        belief["status"] = update["status"]
+
+        self._belief_id_counter += 1
         self._beliefs.setdefault(user_id, []).append(
-            {"fact": fact, "source": source, "confidence": confidence}
+            {
+                "id": self._belief_id_counter,
+                "fact": fact,
+                "source": source,
+                "confidence": adjusted,
+                "status": status,
+            }
         )
 
     @property

@@ -59,6 +59,18 @@ def test_health(api_client: TestClient) -> None:
     assert response.json()["status"] == "ok"
 
 
+def test_metrics_endpoint(api_client: TestClient) -> None:
+    before = api_client.get("/metrics").json()
+    assert "tasks_total" in before
+    assert "critic_rejections_total" in before
+    assert "dreaming_jobs" in before
+    before_completed = before["tasks_total"].get("completed", 0)
+
+    api_client.post("/v1/tasks", json={"user_id": "u1", "input": "metrics test"})
+    after = api_client.get("/metrics").json()
+    assert after["tasks_total"].get("completed", 0) == before_completed + 1
+
+
 def test_submit_and_get_task(api_client: TestClient) -> None:
     submit = api_client.post(
         "/v1/tasks",

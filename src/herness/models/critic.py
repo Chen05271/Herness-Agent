@@ -11,6 +11,14 @@ class FactCheckItem(BaseModel):
     evidence: str = Field(default="", description="支持或反驳的证据")
 
 
+class ToolCheckItem(BaseModel):
+    """单条工具调用核查结果。"""
+
+    tool_name: str = Field(description="工具名称")
+    status: str = Field(description="核查状态：ok | failed | uncited")
+    detail: str = Field(default="", description="工具返回摘要或驳回原因")
+
+
 class CriticOutput(BaseModel):
     """校验 Agent 的结构化输出。"""
 
@@ -23,5 +31,9 @@ class CriticOutput(BaseModel):
     fact_checks: list[FactCheckItem] = Field(
         default_factory=list,
         description="逐条事实核查明细",
+    )
+    tool_checks: list[ToolCheckItem] = Field(
+        default_factory=list,
+        description="逐条工具调用核查明细",
     )
     confidence: float = Field(default=1.0, ge=0.0, le=1.0, description="校验置信度")

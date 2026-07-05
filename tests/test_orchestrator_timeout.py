@@ -3,7 +3,6 @@
 import asyncio
 from unittest.mock import MagicMock
 
-import pytest
 
 from herness.config import Settings
 from herness.middleware.stub import InMemoryMiddleware

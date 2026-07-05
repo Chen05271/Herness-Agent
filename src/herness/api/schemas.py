@@ -34,5 +34,12 @@ class TaskMessagesResponse(BaseModel):
     messages: list[TaskMessage] = Field(default_factory=list)
 
 
+class TaskCancelResponse(BaseModel):
+    """DELETE /v1/tasks/{id} 响应。"""
+
+    task_id: str
+    status: TaskStatus
+
+
 # 复用现有 TaskRequest 作为 POST body
 TaskCreateRequest = TaskRequest

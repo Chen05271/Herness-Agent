@@ -31,7 +31,10 @@ class SupervisorOutput(BaseModel):
     )
     worker_types: list[WorkerKind] = Field(
         default_factory=list,
-        description="与 task_instructions 对齐的 Worker 类型路由（research/code/summary/default）",
+        description=(
+            "与 task_instructions 对齐的 Worker 类型路由"
+            "（default/research/code/summary/order_ops/product/traceability）"
+        ),
     )
     final_answer: str = Field(
         default="",
@@ -66,6 +69,20 @@ class SupervisorOutput(BaseModel):
                     raise ValueError(f"未知 worker_type: {wt!r}，可选: {WORKER_KINDS}")
             object.__setattr__(self, "worker_types", types)
 
+        return self
+
+    @model_validator(mode="after")
+    def validate_action_fields(self) -> Self:
+        """各 action 必填字段校验。"""
+        if self.action == SupervisorAction.DELEGATE:
+            if not self.delegate_instructions():
+                raise ValueError("delegate 动作需要 task_instruction 或 task_instructions")
+        elif self.action == SupervisorAction.COMPLETE:
+            if not self.final_answer.strip():
+                raise ValueError("complete 动作需要 final_answer")
+        elif self.action == SupervisorAction.ABORT:
+            if not self.abort_reason.strip():
+                raise ValueError("abort 动作需要 abort_reason")
         return self
 
     def delegate_instructions(self) -> list[str]:

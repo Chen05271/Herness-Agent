@@ -68,3 +68,62 @@ async def test_postgres_task_result_and_dreaming_queue(pg_mw: PostgresMiddleware
 async def test_postgres_default_memory(pg_mw: PostgresMiddleware) -> None:
     memory = await pg_mw.get_pre_synthesized_memory(f"unknown_{uuid.uuid4().hex}")
     assert "尚未生成记忆" in memory.summary
+
+
+async def test_postgres_hereness_fts_search() -> None:
+    """Hereness 深度检索 — Postgres tsvector + 词项匹配。"""
+    user_id = f"test_user_{uuid.uuid4().hex[:8]}"
+    pg_mw = PostgresMiddleware(POSTGRES_TEST_DSN, hereness_enabled=True)
+    await pg_mw.connect()
+    try:
+        await pg_mw.seed_belief(user_id, "偏好 Python 编程", source="dreaming")
+        results = await pg_mw.query_beliefs(user_id, ["用户喜欢 Python"])
+        assert results[0]["status"] == "supported"
+    finally:
+        await pg_mw.close()
+
+
+async def test_postgres_hereness_vector_search() -> None:
+    """Hereness v2 — pgvector 语义检索（无 FTS 词面重叠时仍能匹配）。"""
+    from tests.fake_embeddings import FakeEmbeddingClient
+
+    user_id = f"test_user_{uuid.uuid4().hex[:8]}"
+    pg_mw = PostgresMiddleware(
+        POSTGRES_TEST_DSN,
+        hereness_enabled=True,
+        hereness_vector_enabled=True,
+        embedding_client=FakeEmbeddingClient(dimensions=3),
+        embedding_dimensions=3,
+        hereness_vector_top_k=5,
+        hereness_vector_min_similarity=0.7,
+    )
+    await pg_mw.connect()
+    try:
+        await pg_mw.seed_belief(user_id, "偏好 Python 编程", source="dreaming")
+        results = await pg_mw.query_beliefs(user_id, ["用户喜欢 Python"])
+        assert results[0]["status"] == "supported"
+        assert results[0]["matches"]
+    finally:
+        await pg_mw.close()
+
+
+async def test_postgres_hereness_vector_contradiction() -> None:
+    """Hereness v2 — 向量匹配后仍执行矛盾检测。"""
+    from tests.fake_embeddings import FakeEmbeddingClient
+
+    user_id = f"test_user_{uuid.uuid4().hex[:8]}"
+    pg_mw = PostgresMiddleware(
+        POSTGRES_TEST_DSN,
+        hereness_enabled=True,
+        hereness_vector_enabled=True,
+        embedding_client=FakeEmbeddingClient(dimensions=3),
+        embedding_dimensions=3,
+        hereness_vector_min_similarity=0.7,
+    )
+    await pg_mw.connect()
+    try:
+        await pg_mw.seed_belief(user_id, "用户不喜欢 Python", source="manual")
+        results = await pg_mw.query_beliefs(user_id, ["用户喜欢 Python"])
+        assert results[0]["status"] == "contradicted"
+    finally:
+        await pg_mw.close()

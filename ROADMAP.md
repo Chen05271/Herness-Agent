@@ -2,7 +2,7 @@
 
 本文档描述框架从当前 **Demo / 架构骨架** 演进到 **可用 MVP** 及后续版本的优化计划。
 
-> 当前基线：v0.1.0 · 约 22 个源文件 · CLI Demo 可运行 · 无测试 / 无持久化 / 无 API
+> 当前基线：v0.1.0 · CLI + HTTP API + Postgres/Redis + Dreaming + Hereness v2 + 会话多轮 + Worker 工具链 + SSE/取消 + 农业电商 BFF · 123 测试
 
 ---
 
@@ -21,9 +21,9 @@
 
 > 目标：让现有骨架可维护、可回归、可协作。
 
-### P0-1 · 单元测试与集成测试
+### P0-1 · 单元测试与集成测试 ✅
 
-**现状**：`pyproject.toml` 已配置 pytest，但 `tests/` 目录不存在。
+**现状**：`tests/` 已覆盖调度器、API、中台、Dreaming、Hereness、Worker 工具、农业电商 BFF 等；123 个用例通过，7 个 Postgres/Redis 集成测试需本地服务。
 
 **待覆盖**：
 
@@ -47,9 +47,9 @@ tests/
 
 ---
 
-### P0-2 · 初始化 Git 仓库
+### P0-2 · 初始化 Git 仓库 ✅
 
-**现状**：工作区未初始化 git。
+**现状**：已初始化 git 仓库并纳入 `.gitignore`。
 
 **待做**：
 
@@ -59,9 +59,9 @@ tests/
 
 ---
 
-### P0-3 · 调度器层单步重试
+### P0-3 · 调度器层单步重试 ✅
 
-**现状**：`max_retries_per_step` 仅在 PydanticAI Agent 层生效，Orchestrator 无外层重试。
+**现状**：Orchestrator 已在 `_run_supervisor / _run_worker / _run_critic` 外包重试逻辑。
 
 **待做**：
 
@@ -89,7 +89,11 @@ GET  /v1/tasks/{id}/messages  # 审计日志
 
 - 新增 `src/herness/api/` 模块
 - 请求/响应复用现有 `TaskRequest` / `TaskResult` 模型
-- 支持 SSE 流式推送审计日志（可选）
+### API 体验（部分完成）
+
+- **SSE 流式推送** — `GET /v1/tasks/{id}/stream` 实时看审计日志 ✅
+- **任务取消** — `DELETE /v1/tasks/{id}` 中断 RUNNING 任务 ✅
+- **Webhook 回调** — 任务完成时 POST 通知 — 待实现
 - `uvicorn` 启动脚本
 
 **验收标准**：curl 可提交任务并拿到结构化结果。
@@ -175,9 +179,9 @@ GET  /v1/tasks/{id}/messages  # 审计日志
 
 | 阶段 | 方案 |
 |------|------|
-| v1 | 关键词 + 全文检索（Postgres `tsvector`） |
-| v2 | 向量语义检索（pgvector / 外部向量库） |
-| v3 | 冲突检测与消歧（矛盾信念标记 + 置信度衰减） |
+| v1 | 关键词 + 全文检索（Postgres `tsvector`） | ✅ |
+| v2 | 向量语义检索（pgvector / 外部向量库） | ✅ |
+| v3 | 冲突检测与消歧（矛盾信念标记 + 置信度衰减） | ✅ |
 
 **Critic 增强**：
 
@@ -187,44 +191,47 @@ GET  /v1/tasks/{id}/messages  # 审计日志
 
 ---
 
-### P2-3 · 会话与多轮对话
+### P2-3 · 会话与多轮对话 ✅
 
-**现状**：每次 `TaskRequest` 独立，无跨任务上下文。
+**现状**：`session_id` 已关联历史任务；Supervisor 注入前序摘要。
 
-**待做**：
+**已实现**：
 
-- `session_id` 关联历史任务结果
-- Supervisor 可读取同 session 的前序任务摘要
-- 中台新增 `get_session_history(session_id)` 只读接口
+- `get_session_history(session_id)` 中台只读接口
+- Supervisor 动态注入会话历史
+- 任务完成时写入 `task_results.metadata`（含 session_id / input / final_answer）
+- 配置项 `SESSION_HISTORY_LIMIT` 控制注入条数
 
 ---
 
 ## P3 — 生产增强（长期迭代）
 
-### P3-1 · 多 Worker 与并行执行
+### P3-1 · 多 Worker 与并行执行 ✅
 
-- Supervisor 输出支持多任务指令（`task_instructions: list[str]`）
-- 调度器并行 dispatch，Critic 逐条或批量校验
-- Worker 专业化路由（research / code / summary 等）
+- Supervisor 输出支持多任务指令（`task_instructions: list[str]`）✅
+- 调度器并行 dispatch，Critic 逐条或批量校验 ✅
+- Worker 专业化路由（research / code / summary 等）✅
 
-### P3-2 · 工具链扩展
+### P3-2 · 工具链扩展（部分完成）
 
-- Worker 注册外部工具（HTTP、文件、代码执行等）
-- 工具权限与中台读写权限统一管控
-- 工具调用结果纳入 Critic 校验范围
+- Worker 注册外部工具（HTTP、文件、受限 Python 执行）✅
+- 农业电商 BFF 只读工具（mock / HTTP 双模式）✅
+- 工具权限三层交集管控（Settings + 中台 + 任务 metadata）✅
+- 工具调用结果纳入 Critic 校验范围 ✅
+- 工具权限与中台读写权限统一管控 — 待完善
 
 ### P3-3 · 可观测性
 
-- 结构化日志（JSON）+ trace_id 贯穿调度链路
-- OpenTelemetry 集成（span per Agent step）
-- 指标：轮数分布、Critic 驳回率、超时率、Dreaming 延迟
+- 结构化日志（JSON）+ trace_id 贯穿调度链路 ✅
+- 运行时指标：`GET /metrics`（任务终态、轮数、Critic 驳回、重试、Dreaming）✅
+- OpenTelemetry 集成（span per Agent step）— 待实现
 
 ### P3-4 · 安全与配额
 
-- 用户级 rate limit
-- 输入/output 内容审核钩子
-- API Key 鉴权
-- 敏感记忆字段加密存储
+- 用户级 rate limit ✅
+- API Key 鉴权 ✅
+- 输入/output 内容审核钩子 — 待实现
+- 敏感记忆字段加密存储 — 待实现
 
 ---
 
@@ -232,10 +239,12 @@ GET  /v1/tasks/{id}/messages  # 审计日志
 
 | 项目 | 位置 | 说明 |
 |------|------|------|
-| Agent 重试 vs 调度器重试职责不清 | `config.py` / `scheduler.py` | 需统一重试语义并文档化 |
-| Supervisor 无输出字段校验 | `models/supervisor.py` | `action=delegate` 时 `task_instruction` 应为必填 |
-| Critic 未强制调用 `check_beliefs` tool | `agents/critic.py` | 可考虑 tool 强制策略或 post-validation |
-| `get_settings()` 每次重新解析 | `config.py` | 高频路径可改为 lru_cache 单例 |
+| ~~Supervisor 无输出字段校验~~ | `models/supervisor.py` | ✅ 已加 action 必填字段校验 |
+| ~~`get_settings()` 每次重新解析~~ | `config.py` | ✅ 已改为 lru_cache 单例 |
+| ~~Agent 重试 vs 调度器重试职责不清~~ | `config.py` / README | ✅ 已在 README 与 Field description 文档化 |
+| ~~Critic 未强制调用 `check_beliefs` tool~~ | `agents/critic_validation.py` | ✅ 调度器后校验强制查询信念库，覆盖 LLM 漏检 |
+| ~~`fact_terms` 未使用~~ | `middleware/beliefs.py` | ✅ 已改为 Jaccard + 子串回退匹配 |
+| ~~Dreaming 失败无重试~~ | `dreaming/worker.py` | ✅ 已加可配置重试与退避 |
 | 无依赖版本锁定 | `pyproject.toml` | 生产环境建议 `uv lock` 或 requirements.lock |
 
 ---
@@ -257,8 +266,8 @@ Week 3
 └── P2-1 Dreaming Worker（最小可用版）
 
 Week 4+
-├── P2-2 Hereness 向量检索
-├── P2-3 会话多轮
+├── P2-2 Hereness 向量检索（下一优先级）
+├── P3-3 可观测性
 └── P3 按需求优先级选取
 ```
 

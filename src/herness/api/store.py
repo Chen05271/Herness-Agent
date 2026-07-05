@@ -48,6 +48,11 @@ class TaskStore:
         record.status = TaskStatus.RUNNING
         record.updated_at = datetime.now(timezone.utc)
 
+    def mark_cancelling(self, task_id: str) -> None:
+        record = self._require(task_id)
+        if record.status == TaskStatus.RUNNING:
+            record.updated_at = datetime.now(timezone.utc)
+
     def complete(self, result: TaskResult) -> None:
         record = self._require(result.task_id)
         record.status = result.status
@@ -129,6 +134,12 @@ class RedisTaskStore:
         record.status = TaskStatus.RUNNING
         record.updated_at = datetime.now(timezone.utc)
         self._save(record)
+
+    def mark_cancelling(self, task_id: str) -> None:
+        record = self._require(task_id)
+        if record.status == TaskStatus.RUNNING:
+            record.updated_at = datetime.now(timezone.utc)
+            self._save(record)
 
     def complete(self, result: TaskResult) -> None:
         record = self._require(result.task_id)

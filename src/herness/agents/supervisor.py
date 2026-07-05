@@ -8,6 +8,7 @@ from herness.agents.base import build_model
 from herness.config import Settings
 from herness.middleware.memory import PreSynthesizedMemory
 from herness.middleware.protocol import DataMiddleware
+from herness.middleware.session import SessionHistoryEntry, format_session_history
 from herness.models.supervisor import SupervisorOutput
 
 
@@ -17,8 +18,10 @@ class SupervisorDeps:
 
     middleware: DataMiddleware
     memory: PreSynthesizedMemory
+    session_history: list[SessionHistoryEntry]
     user_id: str
     task_id: str
+    session_id: str
 
 
 SUPERVISOR_SYSTEM = """\
@@ -30,7 +33,8 @@ SUPERVISOR_SYSTEM = """\
 
 规则：
 - action=delegate 时必须给出 task_instruction（单条）或 task_instructions（多条并行）
-- 可独立子任务请用 task_instructions 列表一次性委派，并可选 worker_types 路由（research/code/summary/default）
+- 可独立子任务请用 task_instructions 列表一次性委派，并可选 worker_types 路由
+- 农业电商场景（若已启用）：订单/物流 → order_ops；商品/库存/直播 → product；溯源/质检 → traceability
 - action=complete 时必须给出 final_answer
 - action=abort 时必须给出 abort_reason
 - 你只能规划，不直接执行具体操作
@@ -53,6 +57,11 @@ def build_supervisor_agent(settings: Settings) -> Agent[SupervisorDeps, Supervis
     async def inject_memory(ctx: RunContext[SupervisorDeps]) -> str:
         """动态注入预合成全局记忆（仅总管可见）。"""
         return ctx.deps.memory.to_prompt_block()
+
+    @agent.instructions
+    async def inject_session_history(ctx: RunContext[SupervisorDeps]) -> str:
+        """动态注入同 session 前序任务摘要。"""
+        return format_session_history(ctx.deps.session_history)
 
     @agent.tool
     async def read_task_history(ctx: RunContext[SupervisorDeps]) -> str:

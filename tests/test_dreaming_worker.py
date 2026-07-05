@@ -112,6 +112,40 @@ async def test_dreaming_worker_run_once_full_flow(dreaming_settings: Settings) -
     assert memory.summary == "合成后"
 
 
+async def test_dreaming_worker_retries_before_failure(dreaming_settings: Settings) -> None:
+    mw = InMemoryMiddleware()
+    user_id = "u1"
+    task_id = "task-retry"
+
+    await mw.write_task_result(
+        user_id,
+        task_id,
+        WorkerOutput(content="完成", summary="ok"),
+    )
+    await mw.enqueue_dreaming_job(user_id, task_id)
+
+    class FailingSynthesizer:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def synthesize(self, *, current, task_result, task_id) -> SynthesisResult:
+            self.calls += 1
+            raise RuntimeError("合成失败")
+
+    settings = Settings(
+        dreaming_poll_timeout_seconds=1,
+        dreaming_max_retries=3,
+        dreaming_retry_backoff_seconds=0.01,
+    )
+    synthesizer = FailingSynthesizer()
+    worker = DreamingWorker(mw, synthesizer, settings)  # type: ignore[arg-type]
+
+    with pytest.raises(RuntimeError, match="合成失败"):
+        await worker.run_once()
+
+    assert synthesizer.calls == 3
+
+
 async def test_dreaming_worker_missing_task_result_raises(dreaming_settings: Settings) -> None:
     mw = InMemoryMiddleware()
     synthesis = SynthesisResult(

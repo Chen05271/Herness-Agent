@@ -10,6 +10,7 @@ from typing import Any
 from herness.config import Settings
 from herness.dreaming.synthesizer import MemorySynthesizer
 from herness.observability.logging import log_event
+from herness.observability.metrics import get_metrics_registry
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +27,7 @@ class DreamingWorker:
         self._middleware = middleware
         self._synthesizer = synthesizer
         self._settings = settings
+        self._metrics = get_metrics_registry()
 
     async def _dequeue(self) -> tuple[str, str] | None:
         dequeue = getattr(self._middleware, "dequeue_dreaming_job", None)
@@ -107,22 +109,46 @@ class DreamingWorker:
             return False
 
         user_id, task_id = job
-        try:
-            await self.process_job(user_id, task_id)
-            await self._mark_done(user_id, task_id, success=True)
-        except Exception as exc:
-            log_event(
-                logger,
-                logging.ERROR,
-                "dreaming_job_failed",
-                user_id=user_id,
-                task_id=task_id,
-                error=str(exc),
-            )
-            await self._mark_done(user_id, task_id, success=False)
-            raise
+        max_retries = self._settings.dreaming_max_retries
+        backoff = self._settings.dreaming_retry_backoff_seconds
+        last_exc: Exception | None = None
 
-        return True
+        for attempt in range(1, max_retries + 1):
+            try:
+                await self.process_job(user_id, task_id)
+                await self._mark_done(user_id, task_id, success=True)
+                if self._settings.metrics_enabled:
+                    self._metrics.record_dreaming_job(success=True)
+                return True
+            except Exception as exc:
+                last_exc = exc
+                if attempt < max_retries:
+                    log_event(
+                        logger,
+                        logging.WARNING,
+                        "dreaming_job_retry",
+                        user_id=user_id,
+                        task_id=task_id,
+                        attempt=attempt,
+                        max_retries=max_retries,
+                        error=str(exc),
+                    )
+                    await asyncio.sleep(backoff * attempt)
+                    continue
+
+                log_event(
+                    logger,
+                    logging.ERROR,
+                    "dreaming_job_failed",
+                    user_id=user_id,
+                    task_id=task_id,
+                    attempts=max_retries,
+                    error=str(exc),
+                )
+                await self._mark_done(user_id, task_id, success=False)
+                if self._settings.metrics_enabled:
+                    self._metrics.record_dreaming_job(success=False)
+                raise last_exc from None
 
     async def run_forever(self) -> None:
         """持续消费队列，直到进程被中断。"""

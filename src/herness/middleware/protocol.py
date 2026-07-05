@@ -3,6 +3,7 @@
 from typing import Any, Protocol, runtime_checkable
 
 from herness.middleware.memory import PreSynthesizedMemory
+from herness.middleware.session import SessionHistoryEntry
 from herness.models.worker import WorkerOutput
 
 
@@ -16,6 +17,14 @@ class ReadOnlyMiddleware(Protocol):
 
     async def query_beliefs(self, user_id: str, claims: list[str]) -> list[dict[str, Any]]:
         """查询 Hereness 信念库，用于事实一致性校验。"""
+        ...
+
+    async def resolve_worker_tools(
+        self,
+        user_id: str,
+        task_id: str,
+    ) -> list[str] | None:
+        """返回允许的工具逻辑名列表；None 表示沿用全局 Settings。"""
         ...
 
 
@@ -39,4 +48,14 @@ class DataMiddleware(ReadOnlyMiddleware, Protocol):
 
     async def enqueue_dreaming_job(self, user_id: str, task_id: str) -> None:
         """投递 Dreaming 异步任务（离线事实提炼），在线链路不阻塞。"""
+        ...
+
+    async def get_session_history(
+        self,
+        session_id: str,
+        *,
+        exclude_task_id: str | None = None,
+        limit: int = 5,
+    ) -> list[SessionHistoryEntry]:
+        """读取同 session 的前序任务摘要（不含当前 task_id）。"""
         ...

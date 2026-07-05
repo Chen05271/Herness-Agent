@@ -4,9 +4,33 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-WorkerKind = Literal["default", "research", "code", "summary"]
+WorkerKind = Literal[
+    "default",
+    "research",
+    "code",
+    "summary",
+    "order_ops",
+    "product",
+    "traceability",
+]
 
-WORKER_KINDS: tuple[WorkerKind, ...] = ("default", "research", "code", "summary")
+WORKER_KINDS: tuple[WorkerKind, ...] = (
+    "default",
+    "research",
+    "code",
+    "summary",
+    "order_ops",
+    "product",
+    "traceability",
+)
+
+
+class WorkerToolInvocation(BaseModel):
+    """Worker 单次工具调用记录（由调度器从 Agent 消息历史提取）。"""
+
+    tool_name: str = Field(description="工具名称")
+    result: str = Field(description="工具返回文本")
+    error: bool = Field(default=False, description="返回是否表示失败")
 
 
 class WorkerOutput(BaseModel):
@@ -21,4 +45,8 @@ class WorkerOutput(BaseModel):
     needs_verification: bool = Field(
         default=True,
         description="是否需要 Critic 校验",
+    )
+    tool_invocations: list[WorkerToolInvocation] = Field(
+        default_factory=list,
+        description="本步工具调用记录，供 Critic 校验",
     )
