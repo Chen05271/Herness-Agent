@@ -61,6 +61,12 @@ export interface TaskMessagesResponse {
   messages: TaskMessage[];
 }
 
+export interface SessionUsageResponse {
+  user_id: string;
+  session_id: string;
+  usage: TokenUsage;
+}
+
 export interface TaskCancelResponse {
   task_id: string;
   status: TaskStatus;

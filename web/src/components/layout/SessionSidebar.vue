@@ -3,6 +3,7 @@ import { computed } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useChatStore } from "@/stores/chat";
 import { useConfirmStore } from "@/stores/confirm";
+import { formatTokenCount } from "@/lib/usage";
 import type { AppTheme } from "@/lib/theme";
 import type { Persona } from "@/types/herness";
 
@@ -30,6 +31,12 @@ const navItems = [
 ];
 
 const showSessionPanel = computed(() => props.showSessions !== false);
+
+const sessionUsageLabel = computed(() => {
+  const usage = chat.sessionUsage;
+  if (!usage || usage.total_tokens <= 0) return "";
+  return `${formatTokenCount(usage.total_tokens)} tokens`;
+});
 
 function isActive(path: string): boolean {
   return route.path.startsWith(path);
@@ -217,6 +224,12 @@ async function handleDelete(sessionId: string, e: Event) {
           <p class="px-3 pb-1 text-[10px] text-subtle">{{ formatDate(session.updatedAt) }}</p>
         </li>
       </ul>
+      <p
+        v-if="chat.activeSessionId && sessionUsageLabel"
+        class="mt-4 border-t border-white/[0.04] px-1 pt-4 text-[10px] theme-accent-muted"
+      >
+        本会话 {{ sessionUsageLabel }}
+      </p>
     </div>
   </aside>
 </template>

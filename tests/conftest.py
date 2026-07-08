@@ -32,6 +32,7 @@ def test_settings() -> Settings:
         step_timeout_seconds=5.0,
         task_timeout_seconds=30.0,
         max_retries_per_step=2,
+        api_key="",
     )
 
 

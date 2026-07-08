@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 
 from herness.api.app import create_app
 from herness.api.store import TaskStore
+from herness.config import Settings
 from herness.middleware.stub import InMemoryMiddleware
 from herness.models.supervisor import SupervisorAction, SupervisorOutput
 from herness.models.task import TaskStatus
@@ -51,10 +52,11 @@ def slow_orchestrator(
 
 
 @pytest.fixture
-def stream_client(slow_orchestrator: Orchestrator) -> TestClient:
+def stream_client(slow_orchestrator: Orchestrator, test_settings: Settings) -> TestClient:
     registry = slow_orchestrator._cancellation_registry
     store = TaskStore()
     app = create_app(
+        settings=test_settings,
         orchestrator=slow_orchestrator,
         store=store,
         middleware=InMemoryMiddleware(),

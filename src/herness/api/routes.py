@@ -9,6 +9,7 @@ from fastapi.responses import StreamingResponse
 
 from herness.api.live import TaskLiveHub
 from herness.api.schemas import (
+    SessionUsageResponse,
     TaskCancelResponse,
     TaskCreateRequest,
     TaskMessagesResponse,
@@ -19,6 +20,7 @@ from herness.api.security import check_user_rate_limit, require_api_key
 from herness.personas import PersonaValidationError, prepare_task_request
 from herness.api.store import TaskStore
 from herness.models.task import TaskRequest, TaskResult, TaskStatus, TokenUsage
+from herness.observability.usage_store import UsageStore
 from herness.orchestrator.cancellation import TaskCancellationRegistry
 from herness.orchestrator.scheduler import Orchestrator
 
@@ -47,11 +49,32 @@ def _get_cancellation_registry(request: Request) -> TaskCancellationRegistry:
     return request.app.state.cancellation_registry
 
 
+def _get_usage_store(request: Request) -> UsageStore:
+    return request.app.state.usage_store
+
+
+async def _persist_task_usage(
+    usage_store: UsageStore,
+    task_request: TaskRequest,
+    result: TaskResult,
+) -> None:
+    if result.usage.total_tokens <= 0 and result.usage.requests <= 0:
+        return
+    await usage_store.record_task_usage(
+        task_id=result.task_id,
+        user_id=task_request.user_id,
+        session_id=task_request.session_id,
+        status=result.status,
+        usage=result.usage,
+    )
+
+
 async def _execute_task(
     store: TaskStore,
     orchestrator: Orchestrator,
     live_hub: TaskLiveHub,
     cancellation_registry: TaskCancellationRegistry,
+    usage_store: UsageStore,
     task_request: TaskRequest,
 ) -> None:
     """后台执行调度器并回写任务状态。"""
@@ -72,6 +95,7 @@ async def _execute_task(
     try:
         result = await orchestrator.run(task_request, on_message=listener)
         store.complete(result)
+        await _persist_task_usage(usage_store, task_request, result)
     except Exception:
         logger.exception("任务执行异常 task_id=%s", task_id)
         store.complete(
@@ -104,6 +128,7 @@ async def submit_task(
     orchestrator = _get_orchestrator(request)
     live_hub = _get_live_hub(request)
     cancellation_registry = _get_cancellation_registry(request)
+    usage_store = _get_usage_store(request)
 
     record = store.create(prepared)
     cancellation_registry.mark_pending(record.task_id)
@@ -113,6 +138,7 @@ async def submit_task(
         orchestrator,
         live_hub,
         cancellation_registry,
+        usage_store,
         record.request,
     )
 
@@ -226,4 +252,20 @@ async def stream_task_messages(task_id: str, request: Request) -> StreamingRespo
         event_generator(),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@router.get("/sessions/{session_id}/usage", response_model=SessionUsageResponse)
+async def get_session_usage(
+    session_id: str,
+    user_id: str,
+    request: Request,
+) -> SessionUsageResponse:
+    """查询同 session 累计 token 用量。"""
+    usage_store = _get_usage_store(request)
+    usage = await usage_store.get_session_usage(user_id, session_id)
+    return SessionUsageResponse(
+        user_id=user_id,
+        session_id=session_id,
+        usage=usage,
     )

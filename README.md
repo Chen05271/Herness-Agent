@@ -168,6 +168,7 @@ web/                            # Vue 3 Web 控制台（Chat / Ops / RAG）
 | `GET /v1/tasks/{id}` | 查询任务状态与结果（含 `usage` token 汇总） |
 | `GET /v1/tasks/{id}/messages` | 查询审计日志 |
 | `GET /v1/tasks/{id}/stream` | SSE 流式推送审计日志（长任务实时观测） |
+| `GET /v1/sessions/{id}/usage` | 查询 session 累计 token 用量（`?user_id=`） |
 | `DELETE /v1/tasks/{id}` | 取消 PENDING / RUNNING 任务 |
 
 任务状态存储：配置 `REDIS_URL` 后自动切换为 Redis，否则使用进程内内存。
@@ -351,7 +352,7 @@ POST /v1/rag/ingest  {"text": "...", "collection_id": "consumer"}
 |------|------|
 | JSON 结构化日志 + `trace_id` | ✅ 已实现 |
 | 任务终态 / 轮数 / 耗时指标 | ✅ 已实现 |
-| **LLM Token 用量（按步 / 按任务 / 全局累计）** | ✅ 已实现 |
+| **LLM Token 用量（按步 / 按任务 / 按 session / 全局累计）** | ✅ 已实现 |
 | Critic 驳回率 / 单步重试计数 | ✅ 已实现 |
 | Dreaming 成功/失败计数 | ✅ 已实现 |
 | `GET /metrics` 指标端点 | ✅ 已实现 |
@@ -365,6 +366,7 @@ POST /v1/rag/ingest  {"text": "...", "collection_id": "consumer"}
 - 每次 Supervisor / Worker / Critic 调用后，从 pydantic-ai `result.usage` 提取 input / output tokens
 - 写入审计日志 `TaskMessage.payload.usage`（按 Agent 步骤）
 - 任务结束时汇总到 `TaskResult.usage`，经 `GET /v1/tasks/{id}` 返回
+- 持久化到 `usage_events` 表（Postgres）或进程内存储，经 `GET /v1/sessions/{id}/usage` 按 session 汇总
 - SSE 终态事件 `task_finished` 同样携带 `usage`
 - `/metrics` 响应新增 `tokens.input_total / output_total / total / requests_total`
 

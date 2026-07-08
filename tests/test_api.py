@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 
 from herness.api.app import create_app
 from herness.api.store import TaskStore
+from herness.config import Settings
 from herness.middleware.stub import InMemoryMiddleware
 from herness.models.supervisor import SupervisorAction, SupervisorOutput
 from herness.models.task import TaskStatus
@@ -42,9 +43,10 @@ def mock_orchestrator(
 
 
 @pytest.fixture
-def api_client(mock_orchestrator: Orchestrator) -> TestClient:
+def api_client(mock_orchestrator: Orchestrator, test_settings: Settings) -> TestClient:
     store = TaskStore()
     app = create_app(
+        settings=test_settings,
         orchestrator=mock_orchestrator,
         store=store,
         middleware=InMemoryMiddleware(),
@@ -118,6 +120,7 @@ def test_execute_task_failure_stores_failed(
     orchestrator.run = AsyncMock(side_effect=RuntimeError("boom"))
     store = TaskStore()
     app = create_app(
+        settings=test_settings,
         orchestrator=orchestrator,
         store=store,
         middleware=InMemoryMiddleware(),

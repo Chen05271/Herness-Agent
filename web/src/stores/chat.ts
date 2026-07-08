@@ -25,6 +25,7 @@ import type {
   Persona,
   TaskMessage,
   TaskStatus,
+  TokenUsage,
 } from "@/types/herness";
 import { useSettingsStore } from "./settings";
 
@@ -48,6 +49,7 @@ export const useChatStore = defineStore("chat", () => {
   const isSending = ref(false);
   const activeTaskId = ref<string | null>(null);
   const activeTrace = shallowRef<TaskMessage[]>([]);
+  const sessionUsage = ref<TokenUsage | null>(null);
   const streamAbort = shallowRef<AbortController | null>(null);
   const error = ref<string | null>(null);
 
@@ -133,6 +135,20 @@ export const useChatStore = defineStore("chat", () => {
     return changed ? next : loaded;
   }
 
+  async function refreshSessionUsage(sessionId = activeSessionId.value) {
+    if (!sessionId) {
+      sessionUsage.value = null;
+      return;
+    }
+    try {
+      const ctx = settings.getPersonaContext(persona.value);
+      const resp = await hernessApi.getSessionUsage(sessionId, ctx.userId);
+      sessionUsage.value = resp.usage;
+    } catch {
+      sessionUsage.value = null;
+    }
+  }
+
   async function init(currentPersona: Persona) {
     persona.value = currentPersona;
     sessions.value = await loadSessions(currentPersona);
@@ -163,6 +179,7 @@ export const useChatStore = defineStore("chat", () => {
     messages.value = [];
     activeTrace.value = [];
     error.value = null;
+    sessionUsage.value = null;
   }
 
   async function selectSession(sessionId: string) {
@@ -171,6 +188,7 @@ export const useChatStore = defineStore("chat", () => {
     messages.value = await repairStaleMessages(await loadMessages(sessionId));
     activeTrace.value = [];
     error.value = null;
+    await refreshSessionUsage(sessionId);
   }
 
   async function removeSession(sessionId: string) {
@@ -305,6 +323,7 @@ export const useChatStore = defineStore("chat", () => {
       if (finalized) {
         await updateMessage(finalized);
       }
+      await refreshSessionUsage(sessionId);
       await touchSession(sessionId, { updatedAt: new Date().toISOString() });
     } catch (err) {
       const message = err instanceof Error ? err.message : "发送失败";
@@ -396,6 +415,7 @@ export const useChatStore = defineStore("chat", () => {
     isSending,
     activeTaskId,
     activeTrace,
+    sessionUsage,
     error,
     activeSession,
     hasActiveTask,
@@ -408,5 +428,6 @@ export const useChatStore = defineStore("chat", () => {
     clearActiveSession,
     exportActiveSession,
     checkApiHealth,
+    refreshSessionUsage,
   };
 });

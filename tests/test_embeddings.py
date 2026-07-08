@@ -45,10 +45,13 @@ async def test_openai_embedding_client_parses_response() -> None:
     }
 
 
-def test_build_embedding_client_falls_back_to_llm_settings() -> None:
+def test_build_embedding_client_falls_back_to_llm_settings(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("DASHSCOPE_API_KEY", raising=False)
     settings = Settings(
+        _env_file=None,
         llm_base_url="http://llm.test/v1",
         llm_api_key="llm-key",
+        dashscope_api_key="",
         embedding_model="text-embedding-3-small",
         embedding_dimensions=1536,
     )

@@ -6,9 +6,12 @@
 
 - **C 端智能助手** (`/chat`) — consumer persona 对话
 - **B 端商家运营** (`/ops`) — merchant persona，可配置商家/操作员 ID
+- **RAG 知识库** (`/rag`) — 文档入库与知识图谱
 - **SSE 实时轨迹** — 右侧面板展示 Supervisor / Worker / Critic 审计日志
+- **Token 用量** — 审计面板逐步展示；聊天气泡与侧边栏显示 session 累计用量
 - **会话持久化** — IndexedDB 本地保存对话历史
 - **任务取消** — 运行中可停止 Agent 任务
+- **确认弹窗** — 清空/删除对话时使用应用内毛玻璃对话框
 
 ## 启动
 
@@ -18,6 +21,8 @@ cd "D:\develop\Herness Agent"
 .\run-api.ps1
 
 # 2. 启动前端
+.\run-web.ps1
+# 或
 cd web
 npm install
 npm run dev
@@ -25,7 +30,7 @@ npm run dev
 
 浏览器打开 http://localhost:5173
 
-开发模式下 Vite 将 `/api` 代理到 `http://localhost:8090`。
+开发模式下 Vite 将 `/api` 代理到 `http://localhost:8090`（见 `vite.config.ts`）。
 
 ## 环境变量
 
@@ -36,12 +41,59 @@ npm run dev
 | `VITE_API_BASE` | API 前缀，默认 `/api`（dev 走代理） |
 | `VITE_API_KEY` | 后端 `API_KEY`，留空则无鉴权 |
 
-## 构建
+## 构建与生产部署
 
 ```powershell
+cd web
 npm run build
+```
+
+产物在 `web/dist/`。推荐与 API 同域部署，由反向代理统一入口：
+
+```nginx
+# 示例：API 8090 + 静态前端
+server {
+    listen 80;
+    server_name agent.example.com;
+
+    location / {
+        root /var/www/herness-console/dist;
+        try_files $uri $uri/ /index.html;
+    }
+
+    location /api/ {
+        proxy_pass http://127.0.0.1:8090/;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header Authorization $http_authorization;
+        proxy_buffering off;  # SSE /v1/tasks/{id}/stream
+    }
+}
+```
+
+生产构建时设置：
+
+```env
+VITE_API_BASE=/api
+VITE_API_KEY=your-production-api-key
+```
+
+后端 `.env` 同步设置 `API_KEY`，并配置 `API_PORT=8090`（或与反代一致）。
+
+本地预览构建结果：
+
+```powershell
 npm run preview
 ```
+
+## Token 用量查看
+
+| 位置 | 说明 |
+|------|------|
+| 侧边栏底部 | 当前 session 累计 tokens |
+| 聊天气泡 | 单条回复的任务用量 |
+| 审计面板 | 每步 Agent 用量 + 本次任务合计 |
+| API | `GET /v1/sessions/{session_id}/usage?user_id=...` |
 
 ## 技术栈
 

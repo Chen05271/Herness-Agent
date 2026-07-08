@@ -9,6 +9,7 @@ import type {
   TaskMessagesResponse,
   TaskStatusResponse,
   TaskSubmitResponse,
+  SessionUsageResponse,
 } from "@/types/herness";
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? "/api";
@@ -67,6 +68,18 @@ export const hernessApi = {
       method: "DELETE",
       headers: authHeaders(),
     });
+    return handleResponse(res);
+  },
+
+  async getSessionUsage(
+    sessionId: string,
+    userId: string,
+  ): Promise<SessionUsageResponse> {
+    const params = new URLSearchParams({ user_id: userId });
+    const res = await fetch(
+      `${API_BASE}/v1/sessions/${encodeURIComponent(sessionId)}/usage?${params}`,
+      { headers: authHeaders() },
+    );
     return handleResponse(res);
   },
 

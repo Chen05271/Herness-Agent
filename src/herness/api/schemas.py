@@ -42,6 +42,14 @@ class TaskCancelResponse(BaseModel):
     status: TaskStatus
 
 
+class SessionUsageResponse(BaseModel):
+    """GET /v1/sessions/{id}/usage 响应。"""
+
+    user_id: str
+    session_id: str
+    usage: TokenUsage = Field(default_factory=TokenUsage)
+
+
 class RagIngestRequest(BaseModel):
     """POST /v1/rag/ingest 请求。"""
 
