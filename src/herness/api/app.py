@@ -6,6 +6,7 @@ from typing import AsyncIterator
 from fastapi import FastAPI
 
 from herness.api.live import TaskLiveHub
+from herness.api.rag_routes import router as rag_router
 from herness.api.routes import router
 from herness.api.security import RateLimiter
 from herness.api.store import TaskStore, close_task_store, create_task_store
@@ -78,6 +79,7 @@ def create_app(
         lifespan=lifespan,
     )
     app.include_router(router)
+    app.include_router(rag_router)
 
     @app.get("/health")
     async def health() -> dict[str, str]:

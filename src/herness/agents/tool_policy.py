@@ -6,6 +6,7 @@ from typing import Any
 
 from herness.config import Settings
 from herness.integrations.agri_commerce.factory import AGRI_COMMERCE_READ_TOOLS
+from herness.integrations.agri_commerce.admin_factory import AGRI_ADMIN_TOOLS
 from herness.middleware.protocol import ReadOnlyMiddleware
 
 ALL_WORKER_TOOLS: frozenset[str] = frozenset(
@@ -43,6 +44,7 @@ def globally_enabled_tools(settings: Settings) -> set[str]:
         enabled.add("run_python_code")
     if settings.agri_commerce_enabled:
         enabled |= set(AGRI_COMMERCE_READ_TOOLS)
+        enabled |= set(AGRI_ADMIN_TOOLS)
     return enabled
 
 

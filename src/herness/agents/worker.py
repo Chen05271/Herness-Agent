@@ -10,9 +10,14 @@ from herness.agents.base import build_model
 from herness.agents.tools import WorkerToolError, http_request, read_text_file, run_python_code
 from herness.config import Settings
 from herness.integrations.agri_commerce.protocol import AgriCommerceClient
+from herness.integrations.agri_commerce.admin_protocol import AgriAdminClient
 from herness.integrations.agri_commerce import tools as agri_tools
+from herness.integrations.agri_commerce import admin_tools as agri_admin_tools
 from herness.middleware.protocol import ReadOnlyMiddleware
 from herness.models.worker import WORKER_KINDS, WorkerKind, WorkerOutput
+from herness.personas import Persona
+from herness.rag.collections import resolve_kb_collection
+from herness.rag.tools import format_rag_context
 
 _DEFAULT_WORKER_SYSTEM = """\
 你是 Herness 系统的执行 Agent（Worker）。
@@ -25,7 +30,7 @@ _DEFAULT_WORKER_SYSTEM = """\
 - 不要尝试规划或校验，专注执行
 - 完成后设置 needs_verification=true（除非任务明确无需校验）
 
-可用工具（若已启用）：fetch_task_context、http_request、read_text_file、run_python_code。
+可用工具（若已启用）：fetch_task_context、http_request、read_text_file、run_python_code、search_knowledge_base。
 使用工具时请在 content 中引用关键结果；涉及外部数据时务必标注来源。
 """
 
@@ -40,7 +45,9 @@ class WorkerDeps:
     local_context: dict[str, Any]
     allowed_tools: frozenset[str]
     worker_type: WorkerKind = "default"
+    persona: Persona = "consumer"
     agri_client: AgriCommerceClient | None = None
+    admin_client: AgriAdminClient | None = None
 
 
 def _tool_denied(tool_name: str) -> str:
@@ -98,6 +105,30 @@ def _register_worker_tools(
                 return await run_python_code(code, settings=settings)
             except WorkerToolError as exc:
                 return f"代码执行错误：{exc}"
+
+
+def _register_rag_tools(
+    agent: Agent[WorkerDeps, WorkerOutput],
+    settings: Settings,
+) -> None:
+    if not settings.rag_enabled:
+        return
+
+    @agent.tool
+    async def search_knowledge_base(
+        ctx: RunContext[WorkerDeps],
+        query: str,
+        collection: str = "",
+    ) -> str:
+        """检索领域 RAG 知识库（粗检索 → 细检索 → Re-rank），返回相关文档片段。"""
+        if "search_knowledge_base" not in ctx.deps.allowed_tools:
+            return _tool_denied("search_knowledge_base")
+        collection_id = resolve_kb_collection(ctx.deps.persona, collection=collection or None)
+        result = await ctx.deps.middleware.search_knowledge_base(
+            query,
+            collection_id=collection_id,
+        )
+        return format_rag_context(result)
 
 
 def _register_agri_commerce_tools(
@@ -205,6 +236,52 @@ def _register_agri_commerce_tools(
         )
 
 
+def _register_agri_admin_tools(agent: Agent[WorkerDeps, WorkerOutput]) -> None:
+    @agent.tool
+    async def admin_get_dashboard(ctx: RunContext[WorkerDeps]) -> str:
+        """查询运营仪表盘汇总（订单量、待采摘、在售 SKU 等）。"""
+        if "admin_get_dashboard" not in ctx.deps.allowed_tools:
+            return _tool_denied("admin_get_dashboard")
+        if ctx.deps.admin_client is None:
+            return "admin_get_dashboard 工具错误：运营 BFF 未配置"
+        return await agri_admin_tools.tool_admin_get_dashboard(ctx.deps.admin_client)
+
+    @agent.tool
+    async def admin_list_orders(
+        ctx: RunContext[WorkerDeps],
+        status: str = "",
+        limit: int = 20,
+    ) -> str:
+        """列出平台订单（运营视角，可按状态筛选）。"""
+        if "admin_list_orders" not in ctx.deps.allowed_tools:
+            return _tool_denied("admin_list_orders")
+        if ctx.deps.admin_client is None:
+            return "admin_list_orders 工具错误：运营 BFF 未配置"
+        return await agri_admin_tools.tool_admin_list_orders(
+            ctx.deps.admin_client, status=status, limit=limit
+        )
+
+    @agent.tool
+    async def admin_get_order(ctx: RunContext[WorkerDeps], order_id: str) -> str:
+        """查询单笔订单详情（运营视角）。"""
+        if "admin_get_order" not in ctx.deps.allowed_tools:
+            return _tool_denied("admin_get_order")
+        if ctx.deps.admin_client is None:
+            return "admin_get_order 工具错误：运营 BFF 未配置"
+        return await agri_admin_tools.tool_admin_get_order(ctx.deps.admin_client, order_id)
+
+    @agent.tool
+    async def admin_list_products(ctx: RunContext[WorkerDeps], limit: int = 20) -> str:
+        """列出全部 SKU 及上下架状态。"""
+        if "admin_list_products" not in ctx.deps.allowed_tools:
+            return _tool_denied("admin_list_products")
+        if ctx.deps.admin_client is None:
+            return "admin_list_products 工具错误：运营 BFF 未配置"
+        return await agri_admin_tools.tool_admin_list_products(
+            ctx.deps.admin_client, limit=limit
+        )
+
+
 def build_worker_agent(
     settings: Settings,
     *,
@@ -241,6 +318,8 @@ def build_worker_agent(
         return str(context)
 
     _register_worker_tools(agent, settings)
+    _register_rag_tools(agent, settings)
     _register_agri_commerce_tools(agent, settings)
+    _register_agri_admin_tools(agent)
 
     return agent

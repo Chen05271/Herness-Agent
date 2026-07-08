@@ -1,11 +1,8 @@
-"""数据中台层 — 协议定义、内存桩与 Postgres 持久化实现。"""
+"""数据中台层 — 协议定义、内存桩与 Postgres 持久化实现。
 
-from herness.middleware.factory import close_middleware, create_middleware
-from herness.middleware.memory import PreSynthesizedMemory, SynthesizedMemorySlice
-from herness.middleware.postgres import PostgresMiddleware
-from herness.middleware.protocol import DataMiddleware, ReadOnlyMiddleware
-from herness.middleware.redis_augment import RedisAugmentedMiddleware
-from herness.middleware.stub import InMemoryMiddleware
+请从子模块直接导入（如 ``herness.middleware.factory``），勿在本包 ``__init__`` 中
+eager import，否则会与 ``herness.redis.cache`` 形成循环依赖。
+"""
 
 __all__ = [
     "DataMiddleware",

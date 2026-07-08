@@ -7,6 +7,7 @@ from __future__ import annotations
 
 
 import json
+import logging
 
 from importlib.resources import files
 
@@ -23,6 +24,12 @@ from herness.middleware.memory import PreSynthesizedMemory, SynthesizedMemorySli
 from herness.middleware.session import SessionHistoryEntry
 
 from herness.models.worker import WorkerOutput
+
+from herness.rag.models import RagSearchResult
+
+from herness.rag.pipeline import RagPipeline
+
+from herness.rag.store.postgres import PostgresKnowledgeStore
 
 
 
@@ -43,6 +50,8 @@ class PostgresMiddleware:
         *,
 
         auto_migrate: bool = True,
+
+        settings: Any = None,
 
         hereness_enabled: bool = False,
 
@@ -66,9 +75,15 @@ class PostgresMiddleware:
 
         self._auto_migrate = auto_migrate
 
+        self._settings = settings
+
         self._hereness_enabled = hereness_enabled
 
         self._hereness_vector_enabled = hereness_vector_enabled
+
+        self._rag_vector_enabled = bool(
+            settings and getattr(settings, "rag_vector_enabled", False)
+        )
 
         self._embedding_client = embedding_client
 
@@ -83,6 +98,10 @@ class PostgresMiddleware:
         self._hereness_superseded_threshold = hereness_superseded_threshold
 
         self._pool: Any = None
+
+        self._kb_store: PostgresKnowledgeStore | None = None
+
+        self._rag_pipeline: RagPipeline | None = None
 
 
 
@@ -104,9 +123,45 @@ class PostgresMiddleware:
 
 
 
-        async def _init_connection(conn: Any) -> None:
+        self._pool = await asyncpg.create_pool(
 
-            if self._hereness_vector_enabled:
+            self._dsn,
+
+            min_size=1,
+
+            max_size=10,
+
+        )
+
+        if self._auto_migrate:
+
+            await self._ensure_schema()
+
+            need_vector = self._hereness_vector_enabled or self._rag_vector_enabled
+
+            if need_vector:
+
+                vector_ready = await self._ensure_vector_schema()
+
+                if not vector_ready:
+
+                    self._hereness_vector_enabled = False
+
+                    self._rag_vector_enabled = False
+
+
+
+        need_vector_pool = self._hereness_vector_enabled or self._rag_vector_enabled
+
+        if need_vector_pool:
+
+            await self._pool.close()
+
+            self._pool = None
+
+
+
+            async def _init_connection(conn: Any) -> None:
 
                 from pgvector.asyncpg import register_vector
 
@@ -116,25 +171,47 @@ class PostgresMiddleware:
 
 
 
-        self._pool = await asyncpg.create_pool(
+            self._pool = await asyncpg.create_pool(
 
-            self._dsn,
+                self._dsn,
 
-            min_size=1,
+                min_size=1,
 
-            max_size=10,
+                max_size=10,
 
-            init=_init_connection,
+                init=_init_connection,
 
-        )
+            )
 
-        if self._auto_migrate:
 
-            await self._ensure_schema()
 
-            if self._hereness_vector_enabled:
+        if self._settings and getattr(self._settings, "rag_enabled", False):
 
-                await self._ensure_vector_schema()
+            self._kb_store = PostgresKnowledgeStore(
+
+                self._pool,
+
+                embedding_dimensions=self._embedding_dimensions,
+
+                vector_enabled=self._rag_vector_enabled,
+
+            )
+
+            rag_vector_ready = await self._kb_store.ensure_schema()
+
+            if not rag_vector_ready:
+
+                self._rag_vector_enabled = False
+
+            self._rag_pipeline = RagPipeline(
+
+                self._kb_store,
+
+                self._settings,
+
+                embedding_client=self._embedding_client,
+
+            )
 
 
 
@@ -160,19 +237,37 @@ class PostgresMiddleware:
 
 
 
-    async def _ensure_vector_schema(self) -> None:
+    async def _ensure_vector_schema(self) -> bool:
 
-        """按配置维度创建 fact_embedding 列与 HNSW 索引。"""
+        """按配置维度创建 fact_embedding 列与 HNSW 索引；pgvector 不可用时返回 False。"""
+
+        logger = logging.getLogger(__name__)
 
         dim = self._embedding_dimensions
 
         async with self._pool.acquire() as conn:
 
-            await conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
+            try:
 
-            await conn.execute(
+                await conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
 
-                f"""
+            except Exception as exc:
+
+                logger.warning(
+
+                    "pgvector 扩展不可用，已禁用 Hereness 向量检索: %s",
+
+                    exc,
+
+                )
+
+                return False
+
+            try:
+
+                await conn.execute(
+
+                    f"""
 
                 ALTER TABLE beliefs
 
@@ -180,11 +275,11 @@ class PostgresMiddleware:
 
                 """
 
-            )
+                )
 
-            await conn.execute(
+                await conn.execute(
 
-                """
+                    """
 
                 CREATE INDEX IF NOT EXISTS idx_beliefs_fact_embedding
 
@@ -192,7 +287,21 @@ class PostgresMiddleware:
 
                 """
 
-            )
+                )
+
+            except Exception as exc:
+
+                logger.warning(
+
+                    "向量列/索引创建失败，已禁用 Hereness 向量检索: %s",
+
+                    exc,
+
+                )
+
+                return False
+
+        return True
 
 
 
@@ -271,6 +380,34 @@ class PostgresMiddleware:
         ]
 
         return match_beliefs(user_beliefs, claims)
+
+
+
+    async def search_knowledge_base(
+
+        self,
+
+        query: str,
+
+        *,
+
+        collection_id: str = "default",
+
+    ) -> RagSearchResult:
+
+        if self._rag_pipeline is None:
+
+            return RagSearchResult(query=query, collection_id=collection_id, hits=[])
+
+        return await self._rag_pipeline.search(query, collection_id=collection_id)
+
+
+
+    @property
+
+    def knowledge_store(self) -> PostgresKnowledgeStore | None:
+
+        return self._kb_store
 
 
 
@@ -628,6 +765,8 @@ class PostgresMiddleware:
 
         limit: int = 5,
 
+        persona: str | None = None,
+
     ) -> list[SessionHistoryEntry]:
 
         """读取同 session 的前序任务摘要（按时间正序）。"""
@@ -644,6 +783,8 @@ class PostgresMiddleware:
 
               AND ($2::text IS NULL OR task_id != $2)
 
+              AND ($4::text IS NULL OR metadata->>'persona' = $4)
+
             ORDER BY created_at DESC
 
             LIMIT $3
@@ -655,6 +796,8 @@ class PostgresMiddleware:
             exclude_task_id,
 
             limit,
+
+            persona,
 
         )
 

@@ -16,8 +16,9 @@ from herness.api.schemas import (
     TaskSubmitResponse,
 )
 from herness.api.security import check_user_rate_limit, require_api_key
+from herness.personas import PersonaValidationError, prepare_task_request
 from herness.api.store import TaskStore
-from herness.models.task import TaskRequest, TaskResult, TaskStatus
+from herness.models.task import TaskRequest, TaskResult, TaskStatus, TokenUsage
 from herness.orchestrator.cancellation import TaskCancellationRegistry
 from herness.orchestrator.scheduler import Orchestrator
 
@@ -93,13 +94,18 @@ async def submit_task(
     request: Request,
 ) -> TaskSubmitResponse:
     """提交任务，异步执行，返回 task_id。"""
-    check_user_rate_limit(request, body.user_id)
+    try:
+        prepared = prepare_task_request(body, settings=request.app.state.settings)
+    except PersonaValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    check_user_rate_limit(request, prepared.user_id)
     store = _get_store(request)
     orchestrator = _get_orchestrator(request)
     live_hub = _get_live_hub(request)
     cancellation_registry = _get_cancellation_registry(request)
 
-    record = store.create(body)
+    record = store.create(prepared)
     cancellation_registry.mark_pending(record.task_id)
     background_tasks.add_task(
         _execute_task,
@@ -132,6 +138,7 @@ async def get_task(task_id: str, request: Request) -> TaskStatusResponse:
         answer=result.answer if result else "",
         error=result.error if result else "",
         rounds_used=result.rounds_used if result else 0,
+        usage=result.usage if result else TokenUsage(),
         created_at=record.created_at,
         updated_at=record.updated_at,
     )
@@ -207,6 +214,11 @@ async def stream_task_messages(task_id: str, request: Request) -> StreamingRespo
                 "event": "task_finished",
                 "task_id": task_id,
                 "status": record_after.status.value,
+                "usage": (
+                    record_after.result.usage.model_dump()
+                    if record_after.result
+                    else TokenUsage().model_dump()
+                ),
             }
             yield f"data: {json.dumps(terminal, ensure_ascii=False)}\n\n"
 

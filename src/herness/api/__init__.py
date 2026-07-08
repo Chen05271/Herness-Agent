@@ -1,5 +1,7 @@
-"""HTTP API 层 — FastAPI 入口。"""
+"""HTTP API 层 — FastAPI 入口。
 
-from herness.api.app import app, create_app
+请从 ``herness.api.app`` 直接导入，避免 ``python -m herness.api.app`` 时
+eager import 触发 RuntimeWarning。
+"""
 
 __all__ = ["app", "create_app"]

@@ -7,12 +7,15 @@ from herness.middleware.beliefs import match_beliefs, resolve_belief_write_confl
 from herness.middleware.memory import PreSynthesizedMemory, SynthesizedMemorySlice
 from herness.middleware.session import SessionHistoryEntry
 from herness.models.worker import WorkerOutput
+from herness.rag.models import RagSearchResult
+from herness.rag.pipeline import RagPipeline
+from herness.rag.store.memory import InMemoryKnowledgeStore
 
 
 class InMemoryMiddleware:
     """基于 dict 的临时中台，演示权限边界与数据流。"""
 
-    def __init__(self, *, hereness_enabled: bool = False) -> None:
+    def __init__(self, *, hereness_enabled: bool = False, rag_enabled: bool = False) -> None:
         # 用户 → 预合成记忆
         self._memories: dict[str, PreSynthesizedMemory] = {}
         # 用户 → 信念库（Hereness 占位）
@@ -27,9 +30,13 @@ class InMemoryMiddleware:
         self._dreaming_queue: list[tuple[str, str]] = []
         self._tool_policies: dict[tuple[str, str], list[str]] = {}
         self._hereness_enabled = hereness_enabled
+        self._rag_enabled = rag_enabled
         self._belief_id_counter = 0
         self._conflict_decay_factor = 0.5
         self._superseded_threshold = 0.3
+        self._kb_store = InMemoryKnowledgeStore()
+        self._rag_pipeline: RagPipeline | None = None
+        self._rag_settings: Any = None
 
     def configure_hereness_conflict(
         self,
@@ -62,6 +69,31 @@ class InMemoryMiddleware:
             claims,
             deep=self._hereness_enabled,
         )
+
+    def configure_rag(self, settings: Any, *, embedding_client: Any = None) -> None:
+        """注入 RAG 配置与嵌入客户端（测试 / 工厂调用）。"""
+        self._rag_settings = settings
+        if settings.rag_enabled:
+            self._rag_enabled = True
+            self._rag_pipeline = RagPipeline(
+                self._kb_store,
+                settings,
+                embedding_client=embedding_client,
+            )
+
+    @property
+    def knowledge_store(self) -> InMemoryKnowledgeStore:
+        return self._kb_store
+
+    async def search_knowledge_base(
+        self,
+        query: str,
+        *,
+        collection_id: str = "default",
+    ) -> RagSearchResult:
+        if not self._rag_enabled or self._rag_pipeline is None:
+            return RagSearchResult(query=query, collection_id=collection_id, hits=[])
+        return await self._rag_pipeline.search(query, collection_id=collection_id)
 
     async def resolve_worker_tools(
         self,
@@ -103,6 +135,7 @@ class InMemoryMiddleware:
         *,
         exclude_task_id: str | None = None,
         limit: int = 5,
+        persona: str | None = None,
     ) -> list[SessionHistoryEntry]:
         """读取同 session 的前序任务摘要。"""
         entries: list[SessionHistoryEntry] = []
@@ -111,6 +144,8 @@ class InMemoryMiddleware:
                 continue
             meta = self._task_metadata.get(task_id, {})
             if meta.get("session_id") != session_id:
+                continue
+            if persona is not None and meta.get("persona") != persona:
                 continue
             answer = meta.get("final_answer") or output.summary or output.content
             entries.append(

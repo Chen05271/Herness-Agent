@@ -17,6 +17,7 @@ class FakeRunResult:
     """模拟 pydantic_ai RunResult。"""
 
     output: Any
+    usage: Any = None
 
 
 @pytest.fixture

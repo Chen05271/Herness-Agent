@@ -50,6 +50,48 @@ async def test_get_session_history_excludes_current_task() -> None:
     assert history == []
 
 
+async def test_get_session_history_filters_by_persona() -> None:
+    mw = InMemoryMiddleware()
+    await mw.write_task_result(
+        "user_a",
+        "task_consumer",
+        WorkerOutput(content="买家回答", summary="买家"),
+        metadata={
+            "session_id": "consumer-user_a:chat",
+            "persona": "consumer",
+            "input": "买家问题",
+            "final_answer": "买家答复",
+        },
+    )
+    await mw.write_task_result(
+        "merchant:m1:ops:op1",
+        "task_merchant",
+        WorkerOutput(content="商家回答", summary="商家"),
+        metadata={
+            "session_id": "consumer-user_a:chat",
+            "persona": "merchant",
+            "input": "商家问题",
+            "final_answer": "商家答复",
+        },
+    )
+
+    consumer_history = await mw.get_session_history(
+        "consumer-user_a:chat",
+        persona="consumer",
+        limit=5,
+    )
+    assert len(consumer_history) == 1
+    assert consumer_history[0].input == "买家问题"
+
+    merchant_history = await mw.get_session_history(
+        "consumer-user_a:chat",
+        persona="merchant",
+        limit=5,
+    )
+    assert len(merchant_history) == 1
+    assert merchant_history[0].input == "商家问题"
+
+
 async def test_get_session_history_respects_limit_and_order() -> None:
     mw = InMemoryMiddleware()
     for index in range(3):

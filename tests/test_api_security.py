@@ -119,6 +119,30 @@ def test_rate_limit_per_user(rate_limited_app: TestClient) -> None:
     assert other.status_code == 202
 
 
+def test_persona_identity_rejected(secured_app: TestClient) -> None:
+    response = secured_app.post(
+        "/v1/tasks",
+        json={
+            "user_id": "user-1",
+            "input": "hi",
+            "metadata": {"persona": "merchant"},
+        },
+        headers={"Authorization": "Bearer test-secret"},
+    )
+    assert response.status_code == 400
+
+    response = secured_app.post(
+        "/v1/tasks",
+        json={
+            "user_id": "merchant:m1:ops:op1",
+            "input": "hi",
+            "metadata": {"persona": "consumer"},
+        },
+        headers={"Authorization": "Bearer test-secret"},
+    )
+    assert response.status_code == 400
+
+
 def test_get_task_requires_api_key_when_configured(secured_app: TestClient) -> None:
     submit = secured_app.post(
         "/v1/tasks",

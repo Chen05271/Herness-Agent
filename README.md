@@ -2,13 +2,15 @@
 
 多 Agent 协作框架：**PydanticAI 节点层 + 手写调度器 + 数据中台协议**。
 
-> 版本：0.1.0 · Python >= 3.11 · 当前阶段：**可运行 Demo + HTTP API + Postgres/Redis 持久化 + Dreaming + Hereness v2 + 会话多轮 + Worker 工具链 + 农业电商 BFF 集成**
+> 版本：0.1.0 · Python >= 3.11 · 当前阶段：**通用多 Agent 框架 Demo + HTTP API + Web 控制台 + Postgres/Redis 持久化 + Dreaming + Hereness v2 + RAG + 会话多轮 + Token 用量追踪 + Worker 工具链 + 可选领域集成（如农业电商 BFF）**
 
 ---
 
 ## 设计定位
 
 Herness Agent 刻意不依赖 LangGraph 等图编排框架，采用**显式状态机**驱动多 Agent 协作，并通过**中台协议**划分数据读写权限。
+
+**默认以通用智能体形态运行**——不绑定具体业务方向；订单、商品、溯源等领域能力通过 `integrations/` 下的可选模块按需启用，后续可替换或扩展为其他垂直场景。
 
 核心差异化：
 
@@ -78,6 +80,7 @@ Herness Agent 刻意不依赖 LangGraph 等图编排框架，采用**显式状�
 src/herness/
 ├── main.py                     # CLI 入口（本地 Demo）
 ├── config.py                   # 环境变量配置（.env）
+├── personas.py                 # C/B 端 persona 与工具白名单
 ├── agents/
 │   ├── base.py                 # LLM 模型工厂
 │   ├── registry.py             # Agent 注册表
@@ -91,10 +94,12 @@ src/herness/
 ├── api/
 │   ├── app.py                  # FastAPI 应用
 │   ├── routes.py               # /v1/tasks 路由
+│   ├── rag_routes.py           # /v1/rag 知识库路由
 │   ├── schemas.py              # 请求/响应模型
 │   ├── store.py                # 任务状态（内存 / Redis）
 │   ├── security.py             # API Key 鉴权与 rate limit
 │   └── live.py                 # SSE 实时消息中心
+├── rag/                        # RAG 检索管线（分块 / 融合 / 重排 / 入库）
 ├── orchestrator/
 │   ├── scheduler.py            # 手写调度器（核心状态机）
 │   └── cancellation.py         # 任务取消令牌
@@ -109,8 +114,8 @@ src/herness/
 │   ├── redis_augment.py        # Redis 增强层
 │   ├── factory.py              # 中台工厂
 │   └── schema.sql              # Postgres 表结构
-├── integrations/
-│   └── agri_commerce/          # 智慧农业电商 BFF（mock / HTTP）
+├── integrations/               # 可选领域集成（默认不启用）
+│   └── agri_commerce/          # 示例：农业电商 BFF（mock / HTTP）
 │       ├── protocol.py         # 客户端协议
 │       ├── mock_client.py      # 本地样例数据
 │       ├── http_client.py      # 真实 API 对接
@@ -126,7 +131,15 @@ src/herness/
 │   └── merge.py                # 增量合并逻辑
 └── observability/
     ├── logging.py              # 结构化日志 + trace_id
-    └── metrics.py              # 运行时指标注册表
+    ├── metrics.py              # 运行时指标注册表
+    └── usage.py                # LLM token 用量提取与汇总
+
+web/                            # Vue 3 Web 控制台（Chat / Ops / RAG）
+├── src/
+│   ├── views/                  # ChatView / OpsView / RagView
+│   ├── components/             # 聊天、审计 Trace、布局
+│   └── stores/                 # Pinia 状态（chat / confirm / settings）
+└── package.json
 ```
 
 ---
@@ -150,9 +163,9 @@ src/herness/
 | 端点 | 说明 |
 |------|------|
 | `GET /health` | 健康检查（无需鉴权） |
-| `GET /metrics` | 运行时指标快照（无需鉴权） |
+| `GET /metrics` | 运行时指标快照（任务耗时、轮数、**Token 累计**等；无需鉴权） |
 | `POST /v1/tasks` | 提交任务（202，后台异步执行） |
-| `GET /v1/tasks/{id}` | 查询任务状态与结果 |
+| `GET /v1/tasks/{id}` | 查询任务状态与结果（含 `usage` token 汇总） |
 | `GET /v1/tasks/{id}/messages` | 查询审计日志 |
 | `GET /v1/tasks/{id}/stream` | SSE 流式推送审计日志（长任务实时观测） |
 | `DELETE /v1/tasks/{id}` | 取消 PENDING / RUNNING 任务 |
@@ -167,6 +180,19 @@ src/herness/
 
 配置 `API_KEY` 后 `/v1/*` 路由需携带密钥；留空则开发模式无鉴权。`RATE_LIMIT_PER_USER` 按请求体中的 `user_id` 限流（0 表示不限）。
 
+### Persona（用户端 / 管理端）
+
+默认 `persona=consumer`（用户端助手）；`persona=merchant` 面向管理端操作员。两者通过 `user_id` / `session_id` 命名空间隔离，防止记忆与工具越权。
+
+| 能力 | 默认行为 |
+|------|----------|
+| 工具白名单 | 仅 `fetch_task_context` |
+| Supervisor 角色提示 | 通用用户端 / 管理端边界 |
+| 领域工具 | 启用 `AGRI_COMMERCE_ENABLED` 后按 persona 注入对应 BFF 工具 |
+| 领域路由 | 启用集成后 Supervisor 额外注入 order_ops / product / traceability 路由 |
+
+API 请求可通过 `metadata.persona` 指定角色；未显式传入 `allowed_tools` 时由框架按配置自动注入白名单。
+
 ### Worker 专业化路由
 
 | Worker 类型 | 用途 |
@@ -175,8 +201,11 @@ src/herness/
 | `research` | 调研与信息归纳 |
 | `code` | 代码编写与解释 |
 | `summary` | 摘要压缩 |
+| `order_ops` | 订单与履约（需启用领域集成） |
+| `product` | 商品与库存（需启用领域集成） |
+| `traceability` | 溯源与质检（需启用领域集成） |
 
-Supervisor 可通过 `worker_types` 与 `task_instructions` 并行路由；调度器受 `MAX_PARALLEL_WORKERS` 限制。
+Supervisor 可通过 `worker_types` 与 `task_instructions` 并行路由；调度器受 `MAX_PARALLEL_WORKERS` 限制。未启用领域集成时，后三类 Worker 仍可用，但无对应 BFF 工具可调用。
 
 ### Worker 外部工具
 
@@ -191,9 +220,15 @@ Supervisor 可通过 `worker_types` 与 `task_instructions` 并行路由；调�
 
 工具权限由 **全局 Settings → 中台 metadata → 任务 metadata** 三层交集决定（`tool_policy.py`）；Critic 可校验 Worker 工具调用结果（`tool_trace.py`）。
 
-### 智慧农业电商 BFF 集成
+### 可选领域集成
 
-可选集成模块，为 Worker 提供果园/电商只读查询能力；`mock` 模式内置样例数据，无需外部服务。
+框架核心与具体业务方向解耦。`integrations/` 目录存放可按需启用的垂直能力；当前内置 **农业电商 BFF** 作为示例集成，默认关闭。
+
+| 集成 | 配置开关 | 说明 |
+|------|----------|------|
+| 农业电商 BFF | `AGRI_COMMERCE_ENABLED` | 订单 / 商品 / 溯源只读查询；`mock` 内置样例数据 |
+
+启用后，Worker 额外获得以下工具（C 端 / B 端按 persona 区分）：
 
 | 工具 | 说明 |
 |------|------|
@@ -202,6 +237,7 @@ Supervisor 可通过 `worker_types` 与 `task_instructions` 并行路由；调�
 | `get_lot` / `trace_batch` | 批次与溯源 |
 | `search_produce` / `get_availability` | 商品搜索与库存 |
 | `get_live_inventory_hint` | 直播间库存提示 |
+| `admin_get_dashboard` 等 | 管理端运营数据（merchant persona） |
 
 启用方式：
 
@@ -212,7 +248,9 @@ AGRI_COMMERCE_MODE=mock          # mock | http
 # AGRI_COMMERCE_API_KEY=
 ```
 
-`mock` 模式下会自动注入农业领域信念种子（`beliefs_seed.json`），便于 Hereness 校验演示。对接真实 API 时切换为 `http` 并配置 `AGRI_COMMERCE_BASE_URL`。
+`mock` 模式下可配合 `beliefs_seed.json` 注入领域信念种子，便于 Hereness 校验演示。对接真实 API 时切换为 `http` 并配置 `AGRI_COMMERCE_BASE_URL`。
+
+后续新增业务方向时，建议在 `integrations/` 下添加独立模块，并通过 Settings 开关与 persona 工具白名单接入，无需改动调度器核心逻辑。
 
 ### 数据中台（Middleware）
 
@@ -267,6 +305,35 @@ AGRI_COMMERCE_MODE=mock          # mock | http
 
 - **Hereness 校验**：`HERENESS_ENABLED=true` 时，调度器在 Critic LLM 返回后**强制**查询信念库并对齐 `fact_checks`；LLM 是否调用 `check_beliefs` tool 不影响最终结果
 
+### RAG 知识库
+
+| 组件 | 状态 |
+|------|------|
+| 文档分块入库（CLI / HTTP API） | ✅ 已实现 |
+| 粗检索：GrepRAG 词面 + FTS | ✅ 已实现 |
+| 粗检索：pgvector 宽召回 | ✅ 已实现 |
+| 粗检索：GraphRAG 子图扩展 | ✅ 已实现 |
+| 细检索：结构去重 + 邻块扩展 | ✅ 已实现 |
+| Re-rank：identifier 加权 + 可选 Cross-Encoder | ✅ 已实现 |
+| Worker 工具 `search_knowledge_base` | ✅ 已实现 |
+| Persona 集合映射（consumer / merchant） | ✅ 已实现 |
+| GraphRAG 社区摘要 | ✅ 已实现 |
+
+检索链路：**粗检索（GrepRAG + FTS + 向量 + GraphRAG）→ RRF 融合 → 细检索 → Re-rank → Top-K 注入 Worker**。
+
+```bash
+# 启用
+RAG_ENABLED=true
+RAG_VECTOR_ENABLED=true   # 需 pgvector
+
+# CLI 入库
+herness-rag ingest --collection consumer --text "消费者可查询订单物流" --build-communities
+
+# HTTP 检索
+POST /v1/rag/search  {"query": "订单物流", "collection_id": "consumer"}
+POST /v1/rag/ingest  {"text": "...", "collection_id": "consumer"}
+```
+
 ### 会话多轮（Session）
 
 | 能力 | 状态 |
@@ -284,12 +351,33 @@ AGRI_COMMERCE_MODE=mock          # mock | http
 |------|------|
 | JSON 结构化日志 + `trace_id` | ✅ 已实现 |
 | 任务终态 / 轮数 / 耗时指标 | ✅ 已实现 |
+| **LLM Token 用量（按步 / 按任务 / 全局累计）** | ✅ 已实现 |
 | Critic 驳回率 / 单步重试计数 | ✅ 已实现 |
 | Dreaming 成功/失败计数 | ✅ 已实现 |
 | `GET /metrics` 指标端点 | ✅ 已实现 |
+| Web 控制台审计面板 + 气泡用量展示 | ✅ 已实现 |
 | OpenTelemetry span 集成 | ❌ 待实现 |
 
 设置 `STRUCTURED_LOGGING=true` 后，调度链路日志以纯 JSON 行输出，便于 ELK / Loki 采集。`trace_id` 等于 `task_id`，贯穿 Orchestrator 与 Dreaming Worker。
+
+**Token 用量采集**（后端为唯一数据源）：
+
+- 每次 Supervisor / Worker / Critic 调用后，从 pydantic-ai `result.usage` 提取 input / output tokens
+- 写入审计日志 `TaskMessage.payload.usage`（按 Agent 步骤）
+- 任务结束时汇总到 `TaskResult.usage`，经 `GET /v1/tasks/{id}` 返回
+- SSE 终态事件 `task_finished` 同样携带 `usage`
+- `/metrics` 响应新增 `tokens.input_total / output_total / total / requests_total`
+
+```powershell
+# 全局进程内累计（重启清零）
+curl http://localhost:8090/metrics
+
+# 单次任务用量
+curl http://localhost:8090/v1/tasks/{task_id} -H "Authorization: Bearer your-api-key"
+# → usage: { "input_tokens": 430, "output_tokens": 120, "total_tokens": 550, ... }
+```
+
+云端 API（如 DashScope / OpenAI）的**账单与配额**仍以服务商控制台为准；项目内数据用于调试、按任务分析与前端展示。
 
 ---
 
@@ -338,7 +426,7 @@ HERENESS_ENABLED=true
 # EMBEDDING_MODEL=text-embedding-3-small
 # EMBEDDING_DIMENSIONS=1536
 
-# 智慧农业电商 BFF（可选）
+# 可选领域集成 — 农业电商 BFF 示例（默认关闭）
 # AGRI_COMMERCE_ENABLED=true
 # AGRI_COMMERCE_MODE=mock
 ```
@@ -361,7 +449,7 @@ py -3.11 -m herness.main "介绍一下 Herness Agent 框架的架构设计"
 py -3.11 -m herness.api.app
 ```
 
-默认监听 `http://0.0.0.0:8080`。
+默认监听 `http://0.0.0.0:8080`（可通过 `API_PORT` 修改，如 `8090`）。
 
 **提交任务：**
 
@@ -388,7 +476,11 @@ curl http://localhost:8080/v1/tasks/{task_id}
 curl -N http://localhost:8080/v1/tasks/{task_id}/stream
 ```
 
-每条 `data:` 行为 JSON 审计消息；任务结束时额外推送 `{"event":"task_finished","status":"..."}`。
+每条 `data:` 行为 JSON 审计消息（含每步 `payload.usage`）；任务结束时额外推送：
+
+```json
+{"event":"task_finished","task_id":"...","status":"completed","usage":{"input_tokens":430,"output_tokens":120,"total_tokens":550}}
+```
 
 **取消任务：**
 
@@ -417,11 +509,35 @@ py -3.11 -m herness.dreaming.app
 # SELECT user_id, version, summary FROM memories WHERE user_id = 'u1';
 ```
 
-### 7. 运行测试
+### 7. 运行 Web 控制台
+
+Vue 3 + Vite 前端，提供 C 端对话、B 端运营、RAG 知识库三个视图，并通过 SSE 实时展示 Agent 审计轨迹与 Token 用量。
+
+```powershell
+# 终端 1：后端 API（默认 8090，见 .env）
+.\run-api.ps1
+
+# 终端 2：前端开发服务器
+.\run-web.ps1
+# 或
+cd web; npm install; npm run dev
+```
+
+浏览器打开 `http://localhost:5173`。前端通过 Vite 代理访问 `/api` → 后端；需在 `web/.env` 或根目录 `.env` 中配置 `VITE_API_KEY` 与后端 `API_KEY` 一致。
+
+| 视图 | 路径 | 说明 |
+|------|------|------|
+| 智能助手 | `/chat` | C 端 consumer persona |
+| 商家运营 | `/ops` | B 端 merchant persona |
+| RAG | `/rag` | 知识库入库与图谱 |
+
+界面功能：多会话侧边栏、审计 Trace 面板（每步 token + 任务合计）、聊天气泡用量摘要、自定义确认弹窗（清空 / 删除对话）。
+
+### 8. 运行测试
 
 ```powershell
 py -3.11 -m pytest
-# 当前 123 个用例；7 个 Postgres/Redis 集成测试需本地服务
+# 当前 160+ 用例；7 个 Postgres/Redis 集成测试需本地服务
 ```
 
 集成测试（可选，需本地服务）：
@@ -482,9 +598,19 @@ py -3.11 -m pytest tests/test_middleware_postgres.py tests/test_middleware_redis
 | `HERENESS_VECTOR_MIN_SIMILARITY` | `0.5` | 余弦相似度阈值 |
 | `HERENESS_CONFLICT_DECAY_FACTOR` | `0.5` | 矛盾信念置信度衰减系数 |
 | `HERENESS_SUPERSEDED_THRESHOLD` | `0.3` | 低于此置信度的信念标记为 superseded |
+| `RAG_ENABLED` | `false` | RAG 知识库总开关 |
+| `RAG_VECTOR_ENABLED` | `false` | RAG pgvector 语义检索 |
+| `RAG_GREP_ENABLED` | `true` | GrepRAG 词面粗检索 |
+| `RAG_GRAPH_ENABLED` | `true` | GraphRAG 子图扩展 |
+| `RAG_RERANK_ENABLED` | `true` | Re-rank 精排 |
+| `RAG_COARSE_TOP_K` | `80` | 粗检索宽召回条数 |
+| `RAG_FINE_TOP_K` | `20` | 细检索候选条数 |
+| `RAG_FINAL_TOP_K` | `5` | 最终注入条数 |
+| `RAG_VECTOR_MIN_SIMILARITY` | `0.3` | RAG 向量相似度阈值 |
+| `RAG_RERANK_MODEL` | （空） | Cross-Encoder rerank 模型 |
 | `STRUCTURED_LOGGING` | `false` | 纯 JSON 行日志（配合 log_event） |
 | `METRICS_ENABLED` | `true` | 是否采集运行时指标 |
-| `AGRI_COMMERCE_ENABLED` | `false` | 农业电商 BFF 工具开关 |
+| `AGRI_COMMERCE_ENABLED` | `false` | 农业电商 BFF 示例集成开关（默认关闭） |
 | `AGRI_COMMERCE_MODE` | `mock` | `mock` 本地样例 / `http` 对接真实 API |
 | `AGRI_COMMERCE_BASE_URL` | （空） | BFF 根地址 |
 | `AGRI_COMMERCE_API_KEY` | （空） | BFF Bearer Token |

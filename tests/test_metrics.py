@@ -39,3 +39,15 @@ def test_record_dreaming_jobs() -> None:
     snapshot = registry.snapshot()
     assert snapshot["dreaming_jobs"]["completed"] == 1
     assert snapshot["dreaming_jobs"]["failed"] == 1
+
+
+def test_record_token_usage() -> None:
+    registry = MetricsRegistry()
+    registry.record_token_usage(input_tokens=100, output_tokens=40, requests=1)
+    registry.record_token_usage(input_tokens=50, output_tokens=10, requests=1)
+
+    snapshot = registry.snapshot()
+    assert snapshot["tokens"]["input_total"] == 150
+    assert snapshot["tokens"]["output_total"] == 50
+    assert snapshot["tokens"]["total"] == 200
+    assert snapshot["tokens"]["requests_total"] == 2

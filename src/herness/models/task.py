@@ -1,5 +1,7 @@
 """任务生命周期与调度器状态模型 — 所有 Agent 间消息均经调度器流转。"""
 
+from __future__ import annotations
+
 from datetime import datetime, timezone
 from enum import StrEnum
 from typing import Any
@@ -31,6 +33,24 @@ class AgentRole(StrEnum):
     WORKER = "worker"
     CRITIC = "critic"
     ORCHESTRATOR = "orchestrator"
+
+
+class TokenUsage(BaseModel):
+    """LLM token 用量汇总。"""
+
+    input_tokens: int = 0
+    output_tokens: int = 0
+    total_tokens: int = 0
+    requests: int = 0
+    tool_calls: int = 0
+
+    def accumulate(self, other: TokenUsage) -> None:
+        """累加另一段用量（原地更新）。"""
+        self.input_tokens += other.input_tokens
+        self.output_tokens += other.output_tokens
+        self.total_tokens = self.input_tokens + self.output_tokens
+        self.requests += other.requests
+        self.tool_calls += other.tool_calls
 
 
 class TaskMessage(BaseModel):
@@ -65,6 +85,7 @@ class TaskResult(BaseModel):
     answer: str = ""
     error: str = ""
     rounds_used: int = 0
+    usage: TokenUsage = Field(default_factory=TokenUsage)
     messages: list[TaskMessage] = Field(default_factory=list)
 
 
@@ -81,6 +102,7 @@ class TaskState(BaseModel):
     last_workers: list[WorkerOutput] = Field(default_factory=list)
     last_critic: CriticOutput | None = None
     plan_hashes: list[str] = Field(default_factory=list)  # 用于检测循环规划
+    token_usage: TokenUsage = Field(default_factory=TokenUsage)
     started_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     finished_at: datetime | None = None
 

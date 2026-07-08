@@ -34,11 +34,23 @@ class Settings(BaseSettings):
     )
     llm_api_key: str = Field(
         default="",
-        description="API Key；留空时可读对应厂商环境变量（OPENAI_API_KEY 等）",
+        description="API Key；留空时可读 DASHSCOPE_API_KEY 或对应厂商环境变量",
+    )
+    dashscope_api_key: str = Field(
+        default="",
+        validation_alias="DASHSCOPE_API_KEY",
+        description="阿里百炼 DashScope API Key；可自动填充 LLM / Embeddings",
     )
     llm_model: str = Field(
         default="default",
         description="模型名称，如 gpt-4o / deepseek-chat / claude-sonnet-4-6",
+    )
+    llm_enable_thinking: bool | None = Field(
+        default=None,
+        description=(
+            "是否启用 Qwen 等模型的 thinking/reasoning。"
+            "None 时：DashScope + Qwen 混合思考模型默认关闭，以兼容 Agent 结构化输出与 function calling。"
+        ),
     )
 
     # 兼容旧配置名（vLLM 时代），会自动映射到 llm_* 字段
@@ -74,7 +86,7 @@ class Settings(BaseSettings):
 
     # ── HTTP API ──
     api_host: str = Field(default="0.0.0.0", description="API 监听地址")
-    api_port: int = Field(default=8080, ge=1, le=65535, description="API 监听端口")
+    api_port: int = Field(default=8090, ge=1, le=65535, description="API 监听端口")
     api_key: str = Field(
         default="",
         description="API Key；留空则不鉴权（开发模式）",
@@ -131,14 +143,14 @@ class Settings(BaseSettings):
         description="Hereness v2 向量语义检索（需 pgvector + Embeddings API）",
     )
     embedding_model: str = Field(
-        default="text-embedding-3-small",
-        description="Embeddings 模型名称",
+        default="text-embedding-v3",
+        description="Embeddings 模型名称（百炼推荐 text-embedding-v3）",
     )
     embedding_dimensions: int = Field(
-        default=1536,
+        default=1024,
         ge=1,
         le=4096,
-        description="向量维度（须与 beliefs.fact_embedding 列一致）",
+        description="向量维度（text-embedding-v3 默认 1024，须与 beliefs.fact_embedding 列一致）",
     )
     embedding_base_url: str = Field(
         default="",
@@ -173,6 +185,86 @@ class Settings(BaseSettings):
         description="Hereness v3 置信度低于此值的信念标记为 superseded",
     )
 
+    # ── RAG 知识库 ──
+    rag_enabled: bool = Field(
+        default=False,
+        description="启用 RAG 领域知识库（粗/细检索 + GraphRAG + Re-rank）",
+    )
+    rag_vector_enabled: bool = Field(
+        default=False,
+        description="RAG 向量语义检索（需 pgvector + Embeddings API）",
+    )
+    rag_grep_enabled: bool = Field(
+        default=True,
+        description="GrepRAG 词面粗检索通道",
+    )
+    rag_graph_enabled: bool = Field(
+        default=True,
+        description="GraphRAG 子图扩展检索",
+    )
+    rag_community_enabled: bool = Field(
+        default=True,
+        description="GraphRAG 社区摘要检索",
+    )
+    rag_rerank_enabled: bool = Field(
+        default=True,
+        description="Re-rank 精排（启发式 + 可选 Cross-Encoder）",
+    )
+    rag_coarse_top_k: int = Field(
+        default=80,
+        ge=1,
+        le=200,
+        description="粗检索宽召回条数",
+    )
+    rag_fine_top_k: int = Field(
+        default=20,
+        ge=1,
+        le=100,
+        description="细检索候选条数",
+    )
+    rag_final_top_k: int = Field(
+        default=5,
+        ge=1,
+        le=20,
+        description="最终注入 LLM 的条数",
+    )
+    rag_vector_min_similarity: float = Field(
+        default=0.3,
+        ge=0.0,
+        le=1.0,
+        description="RAG 向量相似度阈值",
+    )
+    rag_fts_min_rank: float = Field(
+        default=0.01,
+        ge=0.0,
+        le=1.0,
+        description="RAG FTS 最低 rank",
+    )
+    rag_rerank_model: str = Field(
+        default="",
+        description="Cross-Encoder rerank 模型；留空则仅用启发式精排",
+    )
+    rag_rerank_base_url: str = Field(
+        default="",
+        description="Rerank API 地址；留空沿用 LLM_BASE_URL",
+    )
+    rag_rerank_api_key: str = Field(
+        default="",
+        description="Rerank API Key；留空沿用 LLM_API_KEY",
+    )
+    rag_ingest_chunk_size: int = Field(
+        default=512,
+        ge=128,
+        le=4096,
+        description="入库分块字符数",
+    )
+    rag_ingest_chunk_overlap: int = Field(
+        default=64,
+        ge=0,
+        le=512,
+        description="入库分块重叠字符数",
+    )
+
     # ── 可观测性 ──
     structured_logging: bool = Field(
         default=False,
@@ -199,6 +291,10 @@ class Settings(BaseSettings):
     agri_commerce_api_key: str = Field(
         default="",
         description="BFF 服务 Token（Bearer）",
+    )
+    agri_commerce_admin_token: str = Field(
+        default="",
+        description="运营 BFF 默认 Token；任务 metadata.admin_token 优先",
     )
     agri_commerce_timeout_seconds: float = Field(
         default=30.0,
@@ -244,13 +340,18 @@ class Settings(BaseSettings):
     )
 
     def model_post_init(self, __context: object) -> None:
-        """兼容旧 env 变量名：VLLM_* / MODEL_NAME 优先覆盖 llm_*。"""
+        """兼容旧 env 变量名：VLLM_* / MODEL_NAME / DASHSCOPE_API_KEY 优先覆盖 llm_*。"""
         if self.vllm_base_url:
             object.__setattr__(self, "llm_base_url", self.vllm_base_url)
         if self.vllm_api_key:
             object.__setattr__(self, "llm_api_key", self.vllm_api_key)
         if self.model_name:
             object.__setattr__(self, "llm_model", self.model_name)
+        if self.dashscope_api_key:
+            if not self.llm_api_key:
+                object.__setattr__(self, "llm_api_key", self.dashscope_api_key)
+            if not self.embedding_api_key:
+                object.__setattr__(self, "embedding_api_key", self.dashscope_api_key)
 
 
 @lru_cache

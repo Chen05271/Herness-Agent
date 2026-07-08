@@ -1,10 +1,12 @@
 """中台协议 — 定义读写边界，Worker/Critic 只能访问只读接口。"""
 
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Literal, Protocol, runtime_checkable
 
 from herness.middleware.memory import PreSynthesizedMemory
 from herness.middleware.session import SessionHistoryEntry
 from herness.models.worker import WorkerOutput
+
+PersonaFilter = Literal["consumer", "merchant"]
 
 
 @runtime_checkable
@@ -25,6 +27,15 @@ class ReadOnlyMiddleware(Protocol):
         task_id: str,
     ) -> list[str] | None:
         """返回允许的工具逻辑名列表；None 表示沿用全局 Settings。"""
+        ...
+
+    async def search_knowledge_base(
+        self,
+        query: str,
+        *,
+        collection_id: str = "default",
+    ) -> Any:
+        """RAG 知识库检索，返回 RagSearchResult 或等价 dict。"""
         ...
 
 
@@ -56,6 +67,7 @@ class DataMiddleware(ReadOnlyMiddleware, Protocol):
         *,
         exclude_task_id: str | None = None,
         limit: int = 5,
+        persona: PersonaFilter | None = None,
     ) -> list[SessionHistoryEntry]:
         """读取同 session 的前序任务摘要（不含当前 task_id）。"""
         ...

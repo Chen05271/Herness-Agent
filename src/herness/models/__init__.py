@@ -8,6 +8,7 @@ from herness.models.task import (
     TaskResult,
     TaskState,
     TaskStatus,
+    TokenUsage,
 )
 from herness.models.worker import WorkerOutput
 
@@ -23,5 +24,6 @@ __all__ = [
     "TaskResult",
     "TaskState",
     "TaskStatus",
+    "TokenUsage",
     "WorkerOutput",
 ]

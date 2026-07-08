@@ -16,7 +16,7 @@ async def test_supervisor_receives_session_history(
 ) -> None:
     """同 session 第二次任务应加载前序历史并注入 Supervisor deps。"""
     supervisor, worker, critic = mock_agents
-    session_id = "session_multi"
+    session_id = "consumer-u1:session_multi"
 
     await middleware.write_task_result(
         "u1",
@@ -24,6 +24,7 @@ async def test_supervisor_receives_session_history(
         WorkerOutput(content="上次回答", summary="上次"),
         metadata={
             "session_id": session_id,
+            "persona": "consumer",
             "input": "上次问题",
             "final_answer": "上次回答内容",
         },
@@ -55,7 +56,7 @@ async def test_complete_writes_session_record(
 ) -> None:
     """任务完成时应写入带 session 元数据的 task_result。"""
     supervisor, _, _ = mock_agents
-    session_id = "session_write"
+    session_id = "consumer-u1:session_write"
 
     supervisor.run.return_value = FakeRunResult(
         SupervisorOutput(

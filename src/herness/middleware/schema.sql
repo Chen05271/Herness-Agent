@@ -32,8 +32,7 @@ ALTER TABLE beliefs
 
 CREATE INDEX IF NOT EXISTS idx_beliefs_fact_tsv ON beliefs USING GIN (fact_tsv);
 
--- Hereness v2 向量语义检索（维度由 PostgresMiddleware._ensure_vector_schema 按配置创建）
-CREATE EXTENSION IF NOT EXISTS vector;
+-- Hereness v2 向量扩展与列由 PostgresMiddleware._ensure_vector_schema 按需创建
 
 CREATE TABLE IF NOT EXISTS task_results (
     task_id TEXT PRIMARY KEY,
@@ -61,5 +60,7 @@ CREATE TABLE IF NOT EXISTS dreaming_jobs (
     status TEXT NOT NULL DEFAULT 'pending',
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+-- RAG 知识库表由 PostgresKnowledgeStore.ensure_schema 按需创建（见 rag/store/postgres.py）
 
 CREATE INDEX IF NOT EXISTS idx_dreaming_jobs_status ON dreaming_jobs (status);

@@ -16,6 +16,7 @@ from herness.agents.registry import build_worker_registry
 from herness.agents.tool_policy import resolve_allowed_worker_tools
 from herness.agents.tool_trace import extract_tool_invocations
 from herness.integrations.agri_commerce.factory import build_agri_commerce_client
+from herness.integrations.agri_commerce.admin_factory import build_admin_commerce_client
 from herness.integrations.agri_commerce.protocol import AgriCommerceClient
 from herness.models.worker import WORKER_KINDS
 from herness.agents.supervisor import SupervisorDeps, build_supervisor_agent
@@ -32,11 +33,14 @@ from herness.models.task import (
     TaskResult,
     TaskState,
     TaskStatus,
+    TokenUsage,
 )
 from herness.models.worker import WorkerKind, WorkerOutput
 from herness.observability.logging import log_event, set_trace_id
 from herness.observability.metrics import MetricsRegistry, get_metrics_registry
+from herness.observability.usage import usage_from_run, usage_payload
 from herness.orchestrator.cancellation import TaskCancellationRegistry, TaskCancelledError
+from herness.personas import get_persona, prepare_task_request
 
 logger = logging.getLogger(__name__)
 
@@ -102,9 +106,10 @@ class Orchestrator:
     ) -> TaskResult:
         """执行完整任务流程：拉记忆 → 总管规划 → Worker 执行 → Critic 校验 → 循环/完成。"""
         self._on_message = on_message
+        prepared = prepare_task_request(request, settings=self.settings)
         state = TaskState(
-            task_id=request.task_id or str(uuid4()),
-            request=request,
+            task_id=prepared.task_id or str(uuid4()),
+            request=prepared,
             status=TaskStatus.RUNNING,
         )
         set_trace_id(state.task_id)
@@ -114,21 +119,27 @@ class Orchestrator:
 
         # 任务启动：从中台拉取预合成全局记忆，注入总管
         try:
+            persona = get_persona(state.request.metadata)
             memory, session_history = await asyncio.gather(
-                self.middleware.get_pre_synthesized_memory(request.user_id),
+                self.middleware.get_pre_synthesized_memory(state.request.user_id),
                 self.middleware.get_session_history(
-                    request.session_id,
+                    state.request.session_id,
                     exclude_task_id=state.task_id,
                     limit=self.settings.session_history_limit,
+                    persona=persona,
                 ),
             )
             self._log(
                 state,
                 AgentRole.ORCHESTRATOR,
                 f"已加载全局记忆 v{memory.version}，会话历史 {len(session_history)} 条",
+                payload={
+                    "memory_version": memory.version,
+                    "session_history_count": len(session_history),
+                },
             )
 
-            supervisor_prompt = request.input
+            supervisor_prompt = self._build_supervisor_prompt(request)
             critic_feedback = ""
 
             try:
@@ -192,12 +203,10 @@ class Orchestrator:
 
             except TimeoutError:
                 state.status = TaskStatus.TIMEOUT
-                result = TaskResult(
-                    task_id=state.task_id,
-                    status=TaskStatus.TIMEOUT,
+                result = self._make_result(
+                    state,
+                    TaskStatus.TIMEOUT,
                     error="任务超时",
-                    rounds_used=state.round_index + 1,
-                    messages=state.messages,
                 )
                 return self._finalize(state, result)
             except TaskCancelledError:
@@ -304,6 +313,7 @@ class Orchestrator:
             user_id=state.request.user_id,
             task_id=state.task_id,
             session_id=state.request.session_id,
+            persona=get_persona(state.request.metadata),
         )
 
         async def _call() -> SupervisorOutput:
@@ -315,7 +325,25 @@ class Orchestrator:
                 timeout=self.config.step_timeout_seconds,
             )
             output = result.output
-            self._log(state, AgentRole.SUPERVISOR, f"action={output.action.value} | {output.reasoning}")
+            step_usage = self._record_agent_usage(state, result)
+            payload: dict[str, Any] = {
+                "action": output.action.value,
+                "reasoning": output.reasoning,
+                "final_answer": output.final_answer if output.action.value == "complete" else "",
+                "worker_types": (
+                    output.delegate_worker_types()
+                    if output.action.value == "delegate"
+                    else []
+                ),
+            }
+            if step_usage is not None:
+                payload["usage"] = usage_payload(step_usage)
+            self._log(
+                state,
+                AgentRole.SUPERVISOR,
+                f"action={output.action.value} | {output.reasoning}",
+                payload=payload,
+            )
             return output
 
         return await self._run_step_with_retry(state, "Supervisor", _call)
@@ -385,6 +413,8 @@ class Orchestrator:
                 metadata=state.request.metadata,
             )
             allowed_tools = frozenset(allowed)
+        persona = get_persona(state.request.metadata)
+        admin_token = str(state.request.metadata.get("admin_token") or "")
         deps = WorkerDeps(
             middleware=self.middleware,
             user_id=state.request.user_id,
@@ -392,7 +422,14 @@ class Orchestrator:
             local_context=local_context,
             allowed_tools=allowed_tools,
             worker_type=worker_type,
-            agri_client=self._agri_client,
+            persona=persona,
+            agri_client=self._agri_client if persona == "consumer" else None,
+            admin_client=build_admin_commerce_client(
+                self.settings,
+                admin_token=admin_token,
+            )
+            if persona == "merchant"
+            else None,
         )
 
         async def _call() -> WorkerOutput:
@@ -404,11 +441,20 @@ class Orchestrator:
             invocations = extract_tool_invocations(result)
             if invocations:
                 output = output.model_copy(update={"tool_invocations": invocations})
+            step_usage = self._record_agent_usage(state, result)
+            payload: dict[str, Any] = {
+                "worker_type": worker_type,
+                "tool_invocations": [
+                    inv.model_dump(mode="json") for inv in output.tool_invocations
+                ],
+            }
+            if step_usage is not None:
+                payload["usage"] = usage_payload(step_usage)
             self._log(
                 state,
                 AgentRole.WORKER,
                 output.summary,
-                payload={"worker_type": worker_type},
+                payload=payload,
             )
             return output
 
@@ -487,10 +533,19 @@ class Orchestrator:
                     user_id=state.request.user_id,
                     worker_output=worker_output,
                 )
+            step_usage = self._record_agent_usage(state, result)
+            payload: dict[str, Any] = {
+                "passed": output.passed,
+                "confidence": output.confidence,
+                "feedback": output.feedback,
+            }
+            if step_usage is not None:
+                payload["usage"] = usage_payload(step_usage)
             self._log(
                 state,
                 AgentRole.CRITIC,
                 f"passed={output.passed} confidence={output.confidence} | {output.feedback}",
+                payload=payload,
             )
             return output
 
@@ -518,6 +573,7 @@ class Orchestrator:
         metadata = {
             "session_id": state.request.session_id,
             "input": state.request.input,
+            "persona": get_persona(state.request.metadata),
         }
         metadata.update(extra)
         return metadata
@@ -537,51 +593,31 @@ class Orchestrator:
         state.status = TaskStatus.COMPLETED
         state.finished_at = datetime.now(timezone.utc)
         self._log(state, AgentRole.ORCHESTRATOR, "任务完成")
-        return TaskResult(
-            task_id=state.task_id,
-            status=TaskStatus.COMPLETED,
+        return self._make_result(
+            state,
+            TaskStatus.COMPLETED,
             answer=answer,
-            rounds_used=state.round_index + 1,
-            messages=state.messages,
         )
 
     def _abort(self, state: TaskState, reason: str) -> TaskResult:
         """总管主动中止。"""
         state.status = TaskStatus.ABORTED
         state.finished_at = datetime.now(timezone.utc)
-        return TaskResult(
-            task_id=state.task_id,
-            status=TaskStatus.ABORTED,
-            error=reason,
-            rounds_used=state.round_index + 1,
-            messages=state.messages,
-        )
+        return self._make_result(state, TaskStatus.ABORTED, error=reason)
 
     def _cancelled(self, state: TaskState) -> TaskResult:
         """API / 用户主动取消。"""
         state.status = TaskStatus.CANCELLED
         state.finished_at = datetime.now(timezone.utc)
         self._log(state, AgentRole.ORCHESTRATOR, "任务已取消")
-        return TaskResult(
-            task_id=state.task_id,
-            status=TaskStatus.CANCELLED,
-            error="任务已取消",
-            rounds_used=state.round_index + 1,
-            messages=state.messages,
-        )
+        return self._make_result(state, TaskStatus.CANCELLED, error="任务已取消")
 
     def _fail(self, state: TaskState, error: str) -> TaskResult:
         """任务失败。"""
         state.status = TaskStatus.FAILED
         state.finished_at = datetime.now(timezone.utc)
         logger.warning("任务失败 task_id=%s error=%s", state.task_id, error)
-        return TaskResult(
-            task_id=state.task_id,
-            status=TaskStatus.FAILED,
-            error=error,
-            rounds_used=state.round_index + 1,
-            messages=state.messages,
-        )
+        return self._make_result(state, TaskStatus.FAILED, error=error)
 
     def _finalize(self, state: TaskState, result: TaskResult) -> TaskResult:
         """记录任务终态指标与结构化日志。"""
@@ -602,10 +638,73 @@ class Orchestrator:
             status=result.status.value,
             rounds_used=result.rounds_used,
             duration_seconds=round(duration, 3),
+            input_tokens=result.usage.input_tokens,
+            output_tokens=result.usage.output_tokens,
+            total_tokens=result.usage.total_tokens,
         )
         return result
 
+    def _record_agent_usage(self, state: TaskState, result: Any) -> TokenUsage | None:
+        """从 Agent run 结果累加 token 用量。"""
+        step = usage_from_run(result)
+        if step is None:
+            return None
+        if step.total_tokens <= 0 and step.requests <= 0 and step.tool_calls <= 0:
+            return None
+        state.token_usage.accumulate(step)
+        if self._metrics_enabled:
+            self._metrics.record_token_usage(
+                input_tokens=step.input_tokens,
+                output_tokens=step.output_tokens,
+                requests=step.requests,
+            )
+        return step
+
+    def _make_result(
+        self,
+        state: TaskState,
+        status: TaskStatus,
+        *,
+        answer: str = "",
+        error: str = "",
+    ) -> TaskResult:
+        """构造带用量汇总的任务结果。"""
+        return TaskResult(
+            task_id=state.task_id,
+            status=status,
+            answer=answer,
+            error=error,
+            rounds_used=state.round_index + 1,
+            usage=state.token_usage.model_copy(),
+            messages=state.messages,
+        )
+
     # ── 工具方法 ──
+
+    @staticmethod
+    def _build_supervisor_prompt(request: TaskRequest) -> str:
+        """将前端页面上下文与用户输入合并为总管首轮提示。"""
+        page_ctx = request.metadata.get("page_context")
+        if not isinstance(page_ctx, dict):
+            return request.input
+
+        lines = ["## 前端页面上下文"]
+        title = page_ctx.get("title")
+        if title:
+            lines.append(f"页面：{title}")
+        summary = page_ctx.get("summary")
+        if summary:
+            lines.append(str(summary))
+        path = page_ctx.get("path")
+        if path:
+            lines.append(f"路径：{path}")
+        entities = page_ctx.get("entities")
+        if isinstance(entities, dict):
+            for key, value in entities.items():
+                if value:
+                    lines.append(f"{key}：{value}")
+
+        return "\n".join(lines) + f"\n\n## 用户问题\n{request.input}"
 
     @staticmethod
     def _hash_plan(output: SupervisorOutput) -> str:

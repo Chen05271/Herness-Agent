@@ -1,11 +1,16 @@
 """Critic Hereness 后校验单元测试。"""
 
+import json
+
 import pytest
 
-from herness.agents.critic_validation import apply_hereness_verification
+from herness.agents.critic_validation import (
+    apply_hereness_verification,
+    apply_tool_verification,
+)
 from herness.middleware.stub import InMemoryMiddleware
 from herness.models.critic import CriticOutput, FactCheckItem
-from herness.models.worker import WorkerOutput
+from herness.models.worker import WorkerOutput, WorkerToolInvocation
 
 
 @pytest.fixture
@@ -118,3 +123,54 @@ async def test_apply_hereness_overrides_llm_supported_status(
 
     assert verified.passed is False
     assert verified.fact_checks[0].status == "contradicted"
+
+
+def test_apply_tool_verification_accepts_empty_list_orders_when_acknowledged() -> None:
+    empty_orders = json.dumps({"orders": [], "total": 0}, ensure_ascii=False)
+    output = CriticOutput(passed=True, feedback="", confidence=0.9)
+    worker_output = WorkerOutput(
+        content="根据 list_orders 查询，您今日暂无订单记录。",
+        summary="list_orders 返回空列表，今日无订单",
+        needs_verification=True,
+        tool_invocations=[
+            WorkerToolInvocation(
+                tool_name="list_orders",
+                result=empty_orders,
+                error=False,
+            )
+        ],
+    )
+
+    verified = apply_tool_verification(output, worker_output)
+
+    assert verified.passed is True
+    assert verified.tool_checks[0].status == "ok"
+
+
+def test_apply_tool_verification_rejects_nonempty_without_citation() -> None:
+    orders = json.dumps(
+        {
+            "orders": [{"order_id": "ORD-20260705-001", "status": "picking"}],
+            "total": 1,
+        },
+        ensure_ascii=False,
+    )
+    output = CriticOutput(passed=True, feedback="", confidence=0.9)
+    worker_output = WorkerOutput(
+        content="您有一笔订单正在处理中。",
+        summary="查询订单",
+        needs_verification=True,
+        tool_invocations=[
+            WorkerToolInvocation(
+                tool_name="list_orders",
+                result=orders,
+                error=False,
+            )
+        ],
+    )
+
+    verified = apply_tool_verification(output, worker_output)
+
+    assert verified.passed is False
+    assert verified.tool_checks[0].status == "uncited"
+    assert "list_orders" in verified.feedback

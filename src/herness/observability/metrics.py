@@ -24,6 +24,9 @@ class MetricsRegistry:
     duration_sum_seconds: float = 0.0
     dreaming_jobs_completed: int = 0
     dreaming_jobs_failed: int = 0
+    token_input_total: int = 0
+    token_output_total: int = 0
+    token_requests_total: int = 0
     _lock: Lock = field(default_factory=Lock, repr=False)
 
     def record_task_finished(
@@ -62,6 +65,20 @@ class MetricsRegistry:
             else:
                 self.dreaming_jobs_failed += 1
 
+    def record_token_usage(
+        self,
+        *,
+        input_tokens: int,
+        output_tokens: int,
+        requests: int = 0,
+    ) -> None:
+        if input_tokens <= 0 and output_tokens <= 0 and requests <= 0:
+            return
+        with self._lock:
+            self.token_input_total += max(input_tokens, 0)
+            self.token_output_total += max(output_tokens, 0)
+            self.token_requests_total += max(requests, 0)
+
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
             duration_avg = (
@@ -89,6 +106,12 @@ class MetricsRegistry:
                 "dreaming_jobs": {
                     "completed": self.dreaming_jobs_completed,
                     "failed": self.dreaming_jobs_failed,
+                },
+                "tokens": {
+                    "input_total": self.token_input_total,
+                    "output_total": self.token_output_total,
+                    "total": self.token_input_total + self.token_output_total,
+                    "requests_total": self.token_requests_total,
                 },
             }
 

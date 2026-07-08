@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 from herness.agents.tool_policy import normalize_tool_name
 from herness.agents.tool_trace import is_tool_result_error
 from herness.integrations.agri_commerce.factory import AGRI_COMMERCE_READ_TOOLS
@@ -88,8 +90,78 @@ def _truncate(text: str, limit: int = 240) -> str:
     return text[:limit] + "…"
 
 
-def _content_cites_tool_result(content: str, result: str) -> bool:
+_EMPTY_ACK_PHRASES = (
+    "无订单",
+    "没有订单",
+    "暂无订单",
+    "无相关订单",
+    "空列表",
+    "空结果",
+    "暂无记录",
+    "无记录",
+    "0 条",
+    "0条",
+    "0 个",
+    "0个",
+    "total=0",
+    "total：0",
+    "total: 0",
+    "total 0",
+    "共 0",
+    "共0",
+    "未找到",
+    "无数据",
+    "没有数据",
+    "暂无数据",
+    "无匹配",
+    "没有找到",
+)
+
+
+def _is_empty_tool_result(result: str) -> bool:
+    """判断工具返回是否表示「空结果」（与 HTTP/业务错误不同）。"""
+    stripped = result.strip()
+    if not stripped:
+        return True
+    try:
+        data = json.loads(stripped)
+    except json.JSONDecodeError:
+        return stripped in ("[]", "{}")
+
+    if isinstance(data, list):
+        return len(data) == 0
+
+    if isinstance(data, dict):
+        total = data.get("total")
+        if total == 0:
+            return True
+        for key in ("orders", "hits", "items", "products", "results", "data"):
+            value = data.get(key)
+            if isinstance(value, list) and len(value) == 0:
+                return True
+    return False
+
+
+def _content_acknowledges_empty_result(text: str) -> bool:
+    normalized = text.lower()
+    return any(phrase in text or phrase in normalized for phrase in _EMPTY_ACK_PHRASES)
+
+
+def _content_cites_tool_result(
+    content: str,
+    result: str,
+    *,
+    tool_name: str = "",
+) -> bool:
     """启发式判断 Worker 正文是否引用了工具返回的关键片段。"""
+    if _is_empty_tool_result(result) and _content_acknowledges_empty_result(content):
+        return True
+
+    if tool_name and _is_empty_tool_result(result):
+        logic = normalize_tool_name(tool_name)
+        if logic and logic in content.lower().replace("-", "_"):
+            return _content_acknowledges_empty_result(content)
+
     content_lower = content.lower()
     if "http://" in content_lower or "https://" in content_lower:
         return True
@@ -128,6 +200,7 @@ def apply_tool_verification(
     if not worker_output.tool_invocations:
         return output
 
+    combined_text = f"{worker_output.content}\n{worker_output.summary}".strip()
     tool_checks: list[ToolCheckItem] = []
     failed: list[ToolCheckItem] = []
     uncited: list[ToolCheckItem] = []
@@ -143,7 +216,7 @@ def apply_tool_verification(
             )
             failed.append(item)
         elif logic_name in _EXTERNAL_TOOLS and not _content_cites_tool_result(
-            worker_output.content, inv.result
+            combined_text, inv.result, tool_name=logic_name
         ):
             item = ToolCheckItem(
                 tool_name=logic_name,
