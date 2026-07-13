@@ -7,6 +7,9 @@ from typing import Protocol
 import httpx
 
 from herness.config import Settings
+from herness.models.task import TokenUsage
+from herness.models.usage import UsageSource
+from herness.observability.usage_recorder import record_usage_event, usage_from_embedding_response
 
 
 class EmbeddingClient(Protocol):
@@ -34,9 +37,18 @@ class OpenAIEmbeddingClient:
         self._model = model
         self._dimensions = dimensions
         self._timeout = timeout
+        self.last_usage: TokenUsage | None = None
 
-    async def embed(self, texts: list[str]) -> list[list[float]]:
+    async def embed(
+        self,
+        texts: list[str],
+        *,
+        user_id: str = "",
+        session_id: str = "",
+        source: UsageSource | str = UsageSource.EMBEDDING,
+    ) -> list[list[float]]:
         if not texts:
+            self.last_usage = None
             return []
 
         payload: dict[str, object] = {
@@ -56,10 +68,30 @@ class OpenAIEmbeddingClient:
             data = response.json()
 
         items = sorted(data["data"], key=lambda item: item["index"])
+        self.last_usage = usage_from_embedding_response(data)
+        if self.last_usage is not None:
+            await record_usage_event(
+                source=source,
+                usage=self.last_usage,
+                user_id=user_id,
+                session_id=session_id,
+            )
         return [item["embedding"] for item in items]
 
-    async def embed_one(self, text: str) -> list[float]:
-        vectors = await self.embed([text])
+    async def embed_one(
+        self,
+        text: str,
+        *,
+        user_id: str = "",
+        session_id: str = "",
+        source: UsageSource | str = UsageSource.EMBEDDING,
+    ) -> list[float]:
+        vectors = await self.embed(
+            [text],
+            user_id=user_id,
+            session_id=session_id,
+            source=source,
+        )
         return vectors[0]
 
 

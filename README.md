@@ -2,7 +2,7 @@
 
 多 Agent 协作框架：**PydanticAI 节点层 + 手写调度器 + 数据中台协议**。
 
-> 版本：0.1.0 · Python >= 3.11 · 当前阶段：**通用多 Agent 框架 Demo + HTTP API + Web 控制台 + Postgres/Redis 持久化 + Dreaming + Hereness v2 + RAG + 会话多轮 + Token 用量追踪 + Worker 工具链 + 可选领域集成（如农业电商 BFF）**
+> 版本：0.1.0 · Python >= 3.11 · 当前阶段：**通用多 Agent 框架 Demo + HTTP API + Web 控制台（含设置页 / 配额） + Postgres/Redis 持久化 + Dreaming + Hereness v2 + RAG + 会话多轮 + Token 用量追踪与配额 + Worker 工具链 + 可选领域集成（如农业电商 BFF）**
 
 ---
 
@@ -93,9 +93,10 @@ src/herness/
 │   └── tool_trace.py           # 工具调用记录提取
 ├── api/
 │   ├── app.py                  # FastAPI 应用
-│   ├── routes.py               # /v1/tasks 路由
+│   ├── routes.py               # /v1/tasks、用量与公开配置路由
 │   ├── rag_routes.py           # /v1/rag 知识库路由
 │   ├── schemas.py              # 请求/响应模型
+│   ├── webhook.py              # 任务完成 Webhook 通知
 │   ├── store.py                # 任务状态（内存 / Redis）
 │   ├── security.py             # API Key 鉴权与 rate limit
 │   └── live.py                 # SSE 实时消息中心
@@ -132,12 +133,16 @@ src/herness/
 └── observability/
     ├── logging.py              # 结构化日志 + trace_id
     ├── metrics.py              # 运行时指标注册表
-    └── usage.py                # LLM token 用量提取与汇总
+    ├── usage.py                # LLM token 用量提取与汇总
+    ├── usage_recorder.py       # 统一用量写入入口（Orchestrator / Dreaming / RAG）
+    ├── usage_store.py          # 用量持久化（内存 / Postgres）
+    └── usage_schema.sql        # usage_events 表结构
 
-web/                            # Vue 3 Web 控制台（Chat / Ops / RAG）
+web/                            # Vue 3 Web 控制台（Chat / Ops / RAG / Settings）
 ├── src/
-│   ├── views/                  # ChatView / OpsView / RagView
-│   ├── components/             # 聊天、审计 Trace、布局
+│   ├── views/                  # ChatView / OpsView / RagView / SettingsView
+│   ├── components/             # 聊天、审计 Trace、设置、布局
+│   ├── lib/                    # apiConfig / quota / theme / usage
 │   └── stores/                 # Pinia 状态（chat / confirm / settings）
 └── package.json
 ```
@@ -169,6 +174,8 @@ web/                            # Vue 3 Web 控制台（Chat / Ops / RAG）
 | `GET /v1/tasks/{id}/messages` | 查询审计日志 |
 | `GET /v1/tasks/{id}/stream` | SSE 流式推送审计日志（长任务实时观测） |
 | `GET /v1/sessions/{id}/usage` | 查询 session 累计 token 用量（`?user_id=`） |
+| `GET /v1/users/{id}/usage` | 查询用户累计 token 用量（含 Orchestrator / Dreaming / Embedding 等） |
+| `GET /v1/config/public` | 公开配置快照（模型名、能力开关、token 配额上限） |
 | `DELETE /v1/tasks/{id}` | 取消 PENDING / RUNNING 任务 |
 
 任务状态存储：配置 `REDIS_URL` 后自动切换为 Redis，否则使用进程内内存。
@@ -177,9 +184,19 @@ web/                            # Vue 3 Web 控制台（Chat / Ops / RAG）
 |------|------|
 | API Key 鉴权（`Authorization: Bearer` / `X-API-Key`） | ✅ 已实现 |
 | 用户级 rate limit（`POST /v1/tasks`） | ✅ 已实现 |
+| Token 预算配额（用户 / session 超限返回 429） | ✅ 已实现 |
 | 输入/output 内容审核钩子 | ❌ 待实现 |
 
 配置 `API_KEY` 后 `/v1/*` 路由需携带密钥；留空则开发模式无鉴权。`RATE_LIMIT_PER_USER` 按请求体中的 `user_id` 限流（0 表示不限）。
+
+Token 配额（可选）：
+
+```env
+TOKEN_BUDGET_PER_USER=0      # 0 表示不限
+TOKEN_BUDGET_PER_SESSION=0   # 0 表示不限
+```
+
+超限时 `POST /v1/tasks` 返回 **429**，detail 为「用户 token 配额已用尽」或「会话 token 配额已用尽」。前端设置页与对话页会展示用量进度与预警。
 
 ### Persona（用户端 / 管理端）
 
@@ -352,11 +369,12 @@ POST /v1/rag/ingest  {"text": "...", "collection_id": "consumer"}
 |------|------|
 | JSON 结构化日志 + `trace_id` | ✅ 已实现 |
 | 任务终态 / 轮数 / 耗时指标 | ✅ 已实现 |
-| **LLM Token 用量（按步 / 按任务 / 按 session / 全局累计）** | ✅ 已实现 |
+| **LLM Token 用量（按步 / 按任务 / 按 session / 按用户 / 全局累计）** | ✅ 已实现 |
 | Critic 驳回率 / 单步重试计数 | ✅ 已实现 |
+| Dreaming / RAG / Embedding 用量计入 | ✅ 已实现 |
 | Dreaming 成功/失败计数 | ✅ 已实现 |
 | `GET /metrics` 指标端点 | ✅ 已实现 |
-| Web 控制台审计面板 + 气泡用量展示 | ✅ 已实现 |
+| Web 控制台审计面板 + 气泡用量 + 设置页配额 | ✅ 已实现 |
 | OpenTelemetry span 集成 | ❌ 待实现 |
 
 设置 `STRUCTURED_LOGGING=true` 后，调度链路日志以纯 JSON 行输出，便于 ELK / Loki 采集。`trace_id` 等于 `task_id`，贯穿 Orchestrator 与 Dreaming Worker。
@@ -366,9 +384,10 @@ POST /v1/rag/ingest  {"text": "...", "collection_id": "consumer"}
 - 每次 Supervisor / Worker / Critic 调用后，从 pydantic-ai `result.usage` 提取 input / output tokens
 - 写入审计日志 `TaskMessage.payload.usage`（按 Agent 步骤）
 - 任务结束时汇总到 `TaskResult.usage`，经 `GET /v1/tasks/{id}` 返回
-- 持久化到 `usage_events` 表（Postgres）或进程内存储，经 `GET /v1/sessions/{id}/usage` 按 session 汇总
+- 持久化到 `usage_events` 表（Postgres）或进程内存储，经 `GET /v1/sessions/{id}/usage`、`GET /v1/users/{id}/usage` 汇总
 - SSE 终态事件 `task_finished` 同样携带 `usage`
 - `/metrics` 响应新增 `tokens.input_total / output_total / total / requests_total`
+- Dreaming / RAG ingest·search / Embedding 路径经 `usage_recorder` 统一写入
 
 ```powershell
 # 全局进程内累计（重启清零）
@@ -377,6 +396,13 @@ curl http://localhost:8090/metrics
 # 单次任务用量
 curl http://localhost:8090/v1/tasks/{task_id} -H "Authorization: Bearer your-api-key"
 # → usage: { "input_tokens": 430, "output_tokens": 120, "total_tokens": 550, ... }
+
+# Session / 用户累计
+curl "http://localhost:8090/v1/sessions/{session_id}/usage?user_id=u1" -H "Authorization: Bearer your-api-key"
+curl http://localhost:8090/v1/users/u1/usage -H "Authorization: Bearer your-api-key"
+
+# 公开配置（模型、能力开关、配额上限）
+curl http://localhost:8090/v1/config/public -H "Authorization: Bearer your-api-key"
 ```
 
 云端 API（如 DashScope / OpenAI）的**账单与配额**仍以服务商控制台为准；项目内数据用于调试、按任务分析与前端展示。
@@ -513,7 +539,7 @@ py -3.11 -m herness.dreaming.app
 
 ### 7. 运行 Web 控制台
 
-Vue 3 + Vite 前端，提供 C 端对话、B 端运营、RAG 知识库三个视图，并通过 SSE 实时展示 Agent 审计轨迹与 Token 用量。
+Vue 3 + Vite 前端，提供 C 端对话、B 端运营、RAG 知识库与**全局设置页**，并通过 SSE 实时展示 Agent 审计轨迹与 Token 用量。
 
 ```powershell
 # 终端 1：后端 API（默认 8090，见 .env）
@@ -532,14 +558,17 @@ cd web; npm install; npm run dev
 | 智能助手 | `/chat` | C 端 consumer persona |
 | 商家运营 | `/ops` | B 端 merchant persona |
 | RAG | `/rag` | 知识库入库与图谱 |
+| **设置** | `/settings` | 连接、身份、用量配额、界面与本地数据 |
 
-界面功能：多会话侧边栏、审计 Trace 面板（每步 token + 任务合计）、聊天气泡用量摘要、自定义确认弹窗（清空 / 删除对话）。
+界面功能：多会话侧边栏、审计 Trace 面板（每步 token + 任务合计）、聊天气泡用量摘要、**设置页（API 运行时覆盖 / C·B 身份 / 配额进度 / 导出与清空）**、配额接近预警条、429 专用提示、自定义确认弹窗（清空 / 删除对话）。
+
+API 地址与 Key 可在设置页写入 `localStorage` 运行时覆盖，无需重建前端。详见 [web/README.md](web/README.md)。
 
 ### 8. 运行测试
 
 ```powershell
 py -3.11 -m pytest
-# 当前 160+ 用例；7 个 Postgres/Redis 集成测试需本地服务
+# 当前 170+ 用例；Postgres 集成测试需 POSTGRES_TEST_DSN
 ```
 
 集成测试（可选，需本地服务）：
@@ -612,6 +641,8 @@ py -3.11 -m pytest tests/test_middleware_postgres.py tests/test_middleware_redis
 | `RAG_RERANK_MODEL` | （空） | Cross-Encoder rerank 模型 |
 | `STRUCTURED_LOGGING` | `false` | 纯 JSON 行日志（配合 log_event） |
 | `METRICS_ENABLED` | `true` | 是否采集运行时指标 |
+| `TOKEN_BUDGET_PER_USER` | `0` | 单用户累计 token 上限；0 不限 |
+| `TOKEN_BUDGET_PER_SESSION` | `0` | 单 session 累计 token 上限；0 不限 |
 | `AGRI_COMMERCE_ENABLED` | `false` | 农业电商 BFF 示例集成开关（默认关闭） |
 | `AGRI_COMMERCE_MODE` | `mock` | `mock` 本地样例 / `http` 对接真实 API |
 | `AGRI_COMMERCE_BASE_URL` | （空） | BFF 根地址 |

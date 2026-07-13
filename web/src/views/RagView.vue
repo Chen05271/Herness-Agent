@@ -79,9 +79,9 @@ const SAMPLE_DOC = `# GraphRAG 示例知识库
 onMounted(async () => {
   try {
     await hernessApi.healthCheck();
-    settings.apiConnected = true;
+    settings.markApiChecked(true);
   } catch {
-    settings.apiConnected = false;
+    settings.markApiChecked(false);
   }
   window.addEventListener("keydown", handleGlobalShortcut);
 });

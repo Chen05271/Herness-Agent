@@ -132,3 +132,13 @@ def test_execute_task_failure_stores_failed(
         status = client.get(f"/v1/tasks/{task_id}").json()
         assert status["status"] == TaskStatus.FAILED.value
         assert status["error"] == "任务执行异常"
+
+
+def test_public_config_endpoint(api_client: TestClient, test_settings: Settings) -> None:
+    response = api_client.get("/v1/config/public")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["llm_model"] == test_settings.llm_model
+    assert body["features"]["rag_enabled"] == test_settings.rag_enabled
+    assert body["limits"]["token_budget_per_user"] == test_settings.token_budget_per_user
+    assert body["limits"]["token_budget_per_session"] == test_settings.token_budget_per_session

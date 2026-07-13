@@ -9,10 +9,24 @@ class FakeEmbeddingClient:
     def __init__(self, dimensions: int = 3) -> None:
         self._dimensions = dimensions
 
-    async def embed(self, texts: list[str]) -> list[list[float]]:
+    async def embed(
+        self,
+        texts: list[str],
+        *,
+        user_id: str = "",
+        session_id: str = "",
+        source: object = None,
+    ) -> list[list[float]]:
         return [self._vector(text) for text in texts]
 
-    async def embed_one(self, text: str) -> list[float]:
+    async def embed_one(
+        self,
+        text: str,
+        *,
+        user_id: str = "",
+        session_id: str = "",
+        source: object = None,
+    ) -> list[float]:
         return self._vector(text)
 
     def _vector(self, text: str) -> list[float]:

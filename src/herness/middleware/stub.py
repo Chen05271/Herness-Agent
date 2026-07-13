@@ -90,10 +90,15 @@ class InMemoryMiddleware:
         query: str,
         *,
         collection_id: str = "default",
+        user_id: str = "",
     ) -> RagSearchResult:
         if not self._rag_enabled or self._rag_pipeline is None:
             return RagSearchResult(query=query, collection_id=collection_id, hits=[])
-        return await self._rag_pipeline.search(query, collection_id=collection_id)
+        return await self._rag_pipeline.search(
+            query,
+            collection_id=collection_id,
+            user_id=user_id,
+        )
 
     async def resolve_worker_tools(
         self,
@@ -172,6 +177,10 @@ class InMemoryMiddleware:
         if output is None:
             return None
         return output
+
+    async def get_task_metadata(self, user_id: str, task_id: str) -> dict[str, Any]:
+        """读取任务元数据（含 session_id），供 Dreaming 用量归因。"""
+        return dict(self._task_metadata.get(task_id, {}))
 
     async def save_pre_synthesized_memory(self, memory: PreSynthesizedMemory) -> None:
         """写入或更新预合成记忆（Dreaming 合成后调用）。"""

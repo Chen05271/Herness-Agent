@@ -5,10 +5,12 @@
 ## 功能
 
 - **C 端智能助手** (`/chat`) — consumer persona 对话
-- **B 端商家运营** (`/ops`) — merchant persona，可配置商家/操作员 ID
+- **B 端商家运营** (`/ops`) — merchant persona，身份在设置页配置
 - **RAG 知识库** (`/rag`) — 文档入库与知识图谱
+- **设置** (`/settings`) — 连接、身份、用量配额、界面偏好与本地数据管理
 - **SSE 实时轨迹** — 右侧面板展示 Supervisor / Worker / Critic 审计日志
-- **Token 用量** — 审计面板逐步展示；聊天气泡与侧边栏显示 session 累计用量
+- **Token 用量** — 审计面板逐步展示；聊天气泡、侧边栏与设置页展示 session / 用户累计
+- **配额预警** — 用量达 80% 时在输入框上方提示；429 返回专用文案
 - **会话持久化** — IndexedDB 本地保存对话历史
 - **任务取消** — 运行中可停止 Agent 任务
 - **确认弹窗** — 清空/删除对话时使用应用内毛玻璃对话框
@@ -40,6 +42,23 @@ npm run dev
 |------|------|
 | `VITE_API_BASE` | API 前缀，默认 `/api`（dev 走代理） |
 | `VITE_API_KEY` | 后端 `API_KEY`，留空则无鉴权 |
+
+可在 **设置 → 连接与服务** 中运行时覆盖 API 地址与 Key（写入 `localStorage`），无需重新构建。
+
+## 设置页
+
+路由 `/settings`，侧边栏底部齿轮入口。分区如下：
+
+| 分区 | 内容 |
+|------|------|
+| 连接与服务 | API 地址 / Key、连接测试、在线状态 |
+| 身份与角色 | C 端用户 ID、B 端商家/操作员 ID、合成 user_id 预览 |
+| 用量与配额 | C/B 用户累计、当前会话用量、配额进度条、手动刷新 |
+| 界面与体验 | 轨迹面板、侧边栏、Token 显示、自动滚动、消息密度、配额预警开关 |
+| 数据与隐私 | 导出全部会话、清空 C/B 端本地对话 |
+| 关于 | 前端版本、LLM 模型、能力开关、配额上限（来自 `GET /v1/config/public`） |
+
+Ops 页顶栏商家信息为只读摘要，点击「编辑身份」跳转设置页。
 
 ## 构建与生产部署
 
@@ -86,14 +105,27 @@ VITE_API_KEY=your-production-api-key
 npm run preview
 ```
 
-## Token 用量查看
+## Token 用量与配额
 
 | 位置 | 说明 |
 |------|------|
 | 侧边栏底部 | 当前 session 累计 tokens |
 | 聊天气泡 | 单条回复的任务用量 |
 | 审计面板 | 每步 Agent 用量 + 本次任务合计 |
+| 设置页 | C/B 用户累计、当前会话、配额进度条 |
+| 输入框上方 | 配额接近 / 用尽预警（可在设置中关闭） |
 | API | `GET /v1/sessions/{session_id}/usage?user_id=...` |
+| API | `GET /v1/users/{user_id}/usage` |
+| API | `GET /v1/config/public`（模型、能力开关、`TOKEN_BUDGET_*`） |
+
+后端在 `.env` 中配置：
+
+```env
+TOKEN_BUDGET_PER_USER=0
+TOKEN_BUDGET_PER_SESSION=0
+```
+
+`0` 表示不限；超限后新任务返回 429，前端显示对应提示。
 
 ## 技术栈
 

@@ -37,6 +37,12 @@ const router = createRouter({
       component: () => import("@/views/RagView.vue"),
       meta: { title: "RAG 知识库" },
     },
+    {
+      path: "/settings",
+      name: "settings",
+      component: () => import("@/views/SettingsView.vue"),
+      meta: { title: "设置" },
+    },
   ],
 });
 

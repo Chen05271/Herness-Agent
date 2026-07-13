@@ -70,3 +70,20 @@ export async function touchSession(
 export async function clearMessages(sessionId: string): Promise<void> {
   await db.messages.where("sessionId").equals(sessionId).delete();
 }
+
+export async function deleteAllSessionsForPersona(persona: string): Promise<void> {
+  const sessions = await db.sessions.where("persona").equals(persona).toArray();
+  await db.transaction("rw", db.sessions, db.messages, async () => {
+    for (const session of sessions) {
+      await db.messages.where("sessionId").equals(session.id).delete();
+      await db.sessions.delete(session.id);
+    }
+  });
+}
+
+export async function deleteAllSessions(): Promise<void> {
+  await db.transaction("rw", db.sessions, db.messages, async () => {
+    await db.messages.clear();
+    await db.sessions.clear();
+  });
+}

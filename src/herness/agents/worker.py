@@ -127,6 +127,7 @@ def _register_rag_tools(
         result = await ctx.deps.middleware.search_knowledge_base(
             query,
             collection_id=collection_id,
+            user_id=ctx.deps.user_id,
         )
         return format_rag_context(result)
 

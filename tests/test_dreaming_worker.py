@@ -10,7 +10,10 @@ from herness.dreaming.worker import DreamingWorker
 from herness.middleware.memory import PreSynthesizedMemory, SynthesizedMemorySlice
 from herness.middleware.stub import InMemoryMiddleware
 from herness.models.dreaming import NewBelief
+from herness.models.task import TokenUsage
 from herness.models.worker import WorkerOutput
+from herness.observability.usage_recorder import bind_usage_store
+from herness.observability.usage_store import InMemoryUsageStore
 
 
 @dataclass
@@ -55,6 +58,7 @@ async def test_dreaming_worker_processes_job(dreaming_settings: Settings) -> Non
             ],
         ),
         new_beliefs=[NewBelief(fact="用户喜欢 Python")],
+        usage=TokenUsage(),
     )
     synthesizer = FakeSynthesizer(result=synthesis)
     worker = DreamingWorker(mw, synthesizer, dreaming_settings)  # type: ignore[arg-type]
@@ -80,6 +84,7 @@ async def test_dreaming_worker_run_once_empty_queue(dreaming_settings: Settings)
         result=SynthesisResult(
             memory=PreSynthesizedMemory(user_id="u1"),
             new_beliefs=[],
+            usage=TokenUsage(),
         )
     )
     worker = DreamingWorker(mw, synthesizer, dreaming_settings)  # type: ignore[arg-type]
@@ -103,6 +108,7 @@ async def test_dreaming_worker_run_once_full_flow(dreaming_settings: Settings) -
     synthesis = SynthesisResult(
         memory=PreSynthesizedMemory(user_id=user_id, summary="合成后", version=1),
         new_beliefs=[],
+        usage=TokenUsage(),
     )
     synthesizer = FakeSynthesizer(result=synthesis)
     worker = DreamingWorker(mw, synthesizer, dreaming_settings)  # type: ignore[arg-type]
@@ -151,8 +157,39 @@ async def test_dreaming_worker_missing_task_result_raises(dreaming_settings: Set
     synthesis = SynthesisResult(
         memory=PreSynthesizedMemory(user_id="u1"),
         new_beliefs=[],
+        usage=TokenUsage(),
     )
     worker = DreamingWorker(mw, FakeSynthesizer(result=synthesis), dreaming_settings)  # type: ignore[arg-type]
 
     with pytest.raises(ValueError, match="任务结果不存在"):
         await worker.process_job("u1", "missing-task")
+
+
+async def test_dreaming_worker_records_session_usage(dreaming_settings: Settings) -> None:
+    store = InMemoryUsageStore()
+    bind_usage_store(store, metrics_enabled=False)
+    try:
+        mw = InMemoryMiddleware()
+        user_id = "u1"
+        task_id = "task-usage"
+        session_id = "consumer-u1:sess-dream"
+
+        await mw.write_task_result(
+            user_id,
+            task_id,
+            WorkerOutput(content="完成", summary="ok"),
+            metadata={"session_id": session_id},
+        )
+
+        synthesis = SynthesisResult(
+            memory=PreSynthesizedMemory(user_id=user_id, summary="合成后", version=1),
+            new_beliefs=[],
+            usage=TokenUsage(input_tokens=50, output_tokens=20, total_tokens=70, requests=1),
+        )
+        worker = DreamingWorker(mw, FakeSynthesizer(result=synthesis), dreaming_settings)  # type: ignore[arg-type]
+        await worker.process_job(user_id, task_id)
+
+        session_usage = await store.get_session_usage(user_id, session_id)
+        assert session_usage.total_tokens == 70
+    finally:
+        bind_usage_store(None)

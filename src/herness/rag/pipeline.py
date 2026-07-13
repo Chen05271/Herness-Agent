@@ -6,6 +6,7 @@ import logging
 from typing import Any
 
 from herness.config import Settings
+from herness.models.usage import UsageSource
 from herness.middleware.embeddings import EmbeddingClient
 from herness.rag.fusion import merge_candidate_metadata, reciprocal_rank_fusion
 from herness.rag.graph.extractor import expand_subgraph_chunk_ids, link_query_entities
@@ -48,8 +49,9 @@ class RagPipeline:
         query: str,
         *,
         collection_id: str = "default",
+        user_id: str = "",
     ) -> RagSearchResult:
-        coarse = await self._coarse_retrieve(query, collection_id)
+        coarse = await self._coarse_retrieve(query, collection_id, user_id=user_id)
         fine = await self._fine_retrieve(query, collection_id, coarse)
         ranked = await self._reranker.rerank_candidates(query, fine)
         final = ranked[: self._settings.rag_final_top_k]
@@ -81,6 +83,8 @@ class RagPipeline:
         self,
         query: str,
         collection_id: str,
+        *,
+        user_id: str = "",
     ) -> list[dict[str, Any]]:
         settings = self._settings
         ranked_lists: list[list[int]] = []
@@ -122,7 +126,11 @@ class RagPipeline:
             and self._embedding_client is not None
         ):
             try:
-                query_vector = await self._embedding_client.embed_one(query)
+                query_vector = await self._embedding_client.embed_one(
+                    query,
+                    user_id=user_id,
+                    source=UsageSource.RAG,
+                )
                 vector_hits = await self._store.vector_search(
                     collection_id,
                     query_vector,

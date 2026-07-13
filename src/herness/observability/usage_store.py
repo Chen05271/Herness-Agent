@@ -5,31 +5,29 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from importlib.resources import files
 from typing import Any, Protocol, runtime_checkable
 
 from herness.models.task import TaskStatus, TokenUsage
 
 logger = logging.getLogger(__name__)
 
-USAGE_SCHEMA = """
-CREATE TABLE IF NOT EXISTS usage_events (
-    id BIGSERIAL PRIMARY KEY,
-    task_id TEXT NOT NULL UNIQUE,
-    user_id TEXT NOT NULL,
-    session_id TEXT NOT NULL DEFAULT '',
-    status TEXT NOT NULL DEFAULT '',
-    input_tokens INT NOT NULL DEFAULT 0,
-    output_tokens INT NOT NULL DEFAULT 0,
-    total_tokens INT NOT NULL DEFAULT 0,
-    requests INT NOT NULL DEFAULT 0,
-    tool_calls INT NOT NULL DEFAULT 0,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
+DEFAULT_USAGE_SOURCE = "orchestrator"
 
-CREATE INDEX IF NOT EXISTS idx_usage_events_session ON usage_events (session_id);
-CREATE INDEX IF NOT EXISTS idx_usage_events_user ON usage_events (user_id);
-CREATE INDEX IF NOT EXISTS idx_usage_events_created ON usage_events (created_at DESC);
-"""
+
+def usage_schema_sql() -> str:
+    """usage_events 表 DDL — 与 middleware/schema.sql 共用同一文件。"""
+    return files("herness.observability").joinpath("usage_schema.sql").read_text(encoding="utf-8")
+
+
+def usage_schema_comments_sql() -> str:
+    """usage_events 表与字段注释 SQL。"""
+    return files("herness.observability").joinpath("usage_schema_comments.sql").read_text(
+        encoding="utf-8"
+    )
+
+
+USAGE_SCHEMA = usage_schema_sql()
 
 
 @dataclass
@@ -39,6 +37,7 @@ class UsageEvent:
     task_id: str
     user_id: str
     session_id: str
+    source: str
     status: TaskStatus
     usage: TokenUsage
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
@@ -56,6 +55,7 @@ class UsageStore(Protocol):
         session_id: str,
         status: TaskStatus,
         usage: TokenUsage,
+        source: str = DEFAULT_USAGE_SOURCE,
     ) -> None: ...
 
     async def get_session_usage(self, user_id: str, session_id: str) -> TokenUsage: ...
@@ -65,18 +65,44 @@ class UsageStore(Protocol):
     async def close(self) -> None: ...
 
 
-def _sum_usage(events: list[UsageEvent]) -> TokenUsage:
-    total = TokenUsage()
-    for event in events:
-        total.accumulate(event.usage)
-    return total
+def _apply_usage_delta(target: TokenUsage, usage: TokenUsage, *, sign: int = 1) -> None:
+    """对汇总桶做加减；sign=-1 用于 upsert 时撤销旧值。"""
+    target.input_tokens += sign * usage.input_tokens
+    target.output_tokens += sign * usage.output_tokens
+    target.requests += sign * usage.requests
+    target.tool_calls += sign * usage.tool_calls
+    target.total_tokens = target.input_tokens + target.output_tokens
 
 
 class InMemoryUsageStore:
     """进程内用量存储（无 Postgres 时使用）。"""
 
     def __init__(self) -> None:
-        self._events: list[UsageEvent] = []
+        self._by_task: dict[tuple[str, str], UsageEvent] = {}
+        self._session_totals: dict[tuple[str, str], TokenUsage] = {}
+        self._user_totals: dict[str, TokenUsage] = {}
+
+    def _task_key(self, task_id: str, source: str) -> tuple[str, str]:
+        return (task_id, source)
+
+    def _session_key(self, user_id: str, session_id: str) -> tuple[str, str]:
+        return (user_id, session_id)
+
+    def _adjust_totals(
+        self,
+        user_id: str,
+        session_id: str,
+        usage: TokenUsage,
+        *,
+        sign: int,
+    ) -> None:
+        session_total = self._session_totals.setdefault(
+            self._session_key(user_id, session_id),
+            TokenUsage(),
+        )
+        user_total = self._user_totals.setdefault(user_id, TokenUsage())
+        for bucket in (session_total, user_total):
+            _apply_usage_delta(bucket, usage, sign=sign)
 
     async def record_task_usage(
         self,
@@ -86,29 +112,35 @@ class InMemoryUsageStore:
         session_id: str,
         status: TaskStatus,
         usage: TokenUsage,
+        source: str = DEFAULT_USAGE_SOURCE,
     ) -> None:
-        self._events = [e for e in self._events if e.task_id != task_id]
-        self._events.append(
-            UsageEvent(
-                task_id=task_id,
-                user_id=user_id,
-                session_id=session_id,
-                status=status,
-                usage=usage.model_copy(),
+        key = self._task_key(task_id, source)
+        previous = self._by_task.get(key)
+        if previous is not None:
+            self._adjust_totals(
+                previous.user_id,
+                previous.session_id,
+                previous.usage,
+                sign=-1,
             )
+        usage_copy = usage.model_copy()
+        self._by_task[key] = UsageEvent(
+            task_id=task_id,
+            user_id=user_id,
+            session_id=session_id,
+            source=source,
+            status=status,
+            usage=usage_copy,
         )
+        self._adjust_totals(user_id, session_id, usage_copy, sign=1)
 
     async def get_session_usage(self, user_id: str, session_id: str) -> TokenUsage:
-        matched = [
-            e
-            for e in self._events
-            if e.user_id == user_id and e.session_id == session_id
-        ]
-        return _sum_usage(matched)
+        total = self._session_totals.get(self._session_key(user_id, session_id))
+        return total.model_copy() if total is not None else TokenUsage()
 
     async def get_user_usage(self, user_id: str) -> TokenUsage:
-        matched = [e for e in self._events if e.user_id == user_id]
-        return _sum_usage(matched)
+        total = self._user_totals.get(user_id)
+        return total.model_copy() if total is not None else TokenUsage()
 
     async def close(self) -> None:
         return None
@@ -127,6 +159,7 @@ class PostgresUsageStore:
         self._pool = await asyncpg.create_pool(self._dsn, min_size=1, max_size=4)
         async with self._pool.acquire() as conn:
             await conn.execute(USAGE_SCHEMA)
+            await conn.execute(usage_schema_comments_sql())
 
     async def record_task_usage(
         self,
@@ -136,6 +169,7 @@ class PostgresUsageStore:
         session_id: str,
         status: TaskStatus,
         usage: TokenUsage,
+        source: str = DEFAULT_USAGE_SOURCE,
     ) -> None:
         if self._pool is None:
             raise RuntimeError("PostgresUsageStore 未 connect")
@@ -143,11 +177,11 @@ class PostgresUsageStore:
             await conn.execute(
                 """
                 INSERT INTO usage_events (
-                    task_id, user_id, session_id, status,
+                    task_id, user_id, session_id, source, status,
                     input_tokens, output_tokens, total_tokens, requests, tool_calls
                 )
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-                ON CONFLICT (task_id) DO UPDATE SET
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                ON CONFLICT (task_id, source) DO UPDATE SET
                     status = EXCLUDED.status,
                     input_tokens = EXCLUDED.input_tokens,
                     output_tokens = EXCLUDED.output_tokens,
@@ -158,6 +192,7 @@ class PostgresUsageStore:
                 task_id,
                 user_id,
                 session_id,
+                source,
                 status.value,
                 usage.input_tokens,
                 usage.output_tokens,

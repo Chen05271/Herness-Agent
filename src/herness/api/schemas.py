@@ -50,6 +50,38 @@ class SessionUsageResponse(BaseModel):
     usage: TokenUsage = Field(default_factory=TokenUsage)
 
 
+class UserUsageResponse(BaseModel):
+    """GET /v1/users/{id}/usage 响应。"""
+
+    user_id: str
+    usage: TokenUsage = Field(default_factory=TokenUsage)
+
+
+class PublicConfigFeatures(BaseModel):
+    """公开能力开关（不含敏感配置）。"""
+
+    rag_enabled: bool = False
+    dreaming_enabled: bool = False
+    hereness_enabled: bool = False
+    agri_commerce_enabled: bool = False
+
+
+class PublicConfigLimits(BaseModel):
+    """公开 token 配额上限；0 表示不限。"""
+
+    token_budget_per_user: int = 0
+    token_budget_per_session: int = 0
+
+
+class PublicConfigResponse(BaseModel):
+    """GET /v1/config/public 响应。"""
+
+    llm_model: str = ""
+    api_version: str = "0.1.0"
+    features: PublicConfigFeatures = Field(default_factory=PublicConfigFeatures)
+    limits: PublicConfigLimits = Field(default_factory=PublicConfigLimits)
+
+
 class RagIngestRequest(BaseModel):
     """POST /v1/rag/ingest 请求。"""
 
@@ -59,6 +91,7 @@ class RagIngestRequest(BaseModel):
     source: str = "api"
     persona: str | None = None
     build_communities: bool = False
+    user_id: str = ""
 
 
 class RagIngestResponse(BaseModel):
@@ -72,6 +105,7 @@ class RagSearchRequest(BaseModel):
 
     query: str
     collection_id: str = "default"
+    user_id: str = ""
 
 
 class RagHitResponse(BaseModel):

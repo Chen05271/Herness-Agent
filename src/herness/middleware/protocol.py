@@ -34,6 +34,7 @@ class ReadOnlyMiddleware(Protocol):
         query: str,
         *,
         collection_id: str = "default",
+        user_id: str = "",
     ) -> Any:
         """RAG 知识库检索，返回 RagSearchResult 或等价 dict。"""
         ...

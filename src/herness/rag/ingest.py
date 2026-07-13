@@ -7,6 +7,7 @@ from typing import Any
 
 from herness.config import Settings
 from herness.middleware.embeddings import EmbeddingClient
+from herness.models.usage import UsageSource
 from herness.rag.chunker import chunk_text
 from herness.rag.store.protocol import KnowledgeStore
 
@@ -23,6 +24,7 @@ async def ingest_text(
     embedding_client: EmbeddingClient | None = None,
     persona: str | None = None,
     build_graph: bool = True,
+    user_id: str = "",
 ) -> list[int]:
     """将文本分块写入知识库，可选嵌入与建图。"""
     await store.upsert_collection(collection_id, collection_name, persona=persona)
@@ -37,7 +39,11 @@ async def ingest_text(
 
     embeddings: list[list[float] | None] = [None] * len(pieces)
     if settings.rag_vector_enabled and embedding_client is not None:
-        embeddings = await embedding_client.embed(pieces)
+        embeddings = await embedding_client.embed(
+            pieces,
+            user_id=user_id,
+            source=UsageSource.RAG,
+        )
 
     payloads: list[dict[str, Any]] = []
     base_meta = dict(metadata or {})

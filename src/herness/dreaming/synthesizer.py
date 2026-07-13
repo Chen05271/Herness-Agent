@@ -13,7 +13,10 @@ from herness.config import Settings
 from herness.dreaming.merge import merge_memory
 from herness.middleware.memory import PreSynthesizedMemory
 from herness.models.dreaming import DreamingOutput, NewBelief
+from herness.models.task import TokenUsage
+from herness.models.usage import UsageSource
 from herness.models.worker import WorkerOutput
+from herness.observability.usage import usage_from_run
 
 _DREAMING_SYSTEM = """\
 你是 Herness 系统的 Dreaming 记忆合成器（离线管线）。
@@ -55,7 +58,7 @@ def _build_prompt(
 
 
 class SynthesizerBackend(Protocol):
-    async def run(self, prompt: str) -> DreamingOutput: ...
+    async def run(self, prompt: str) -> tuple[DreamingOutput, TokenUsage]: ...
 
 
 class AgentSynthesizerBackend:
@@ -64,9 +67,10 @@ class AgentSynthesizerBackend:
     def __init__(self, agent: Agent[None, DreamingOutput]) -> None:
         self._agent = agent
 
-    async def run(self, prompt: str) -> DreamingOutput:
+    async def run(self, prompt: str) -> tuple[DreamingOutput, TokenUsage]:
         result = await self._agent.run(prompt)
-        return result.output
+        usage = usage_from_run(result) or TokenUsage()
+        return result.output, usage
 
 
 @dataclass
@@ -75,6 +79,7 @@ class SynthesisResult:
 
     memory: PreSynthesizedMemory
     new_beliefs: list[NewBelief]
+    usage: TokenUsage
 
 
 class MemorySynthesizer:
@@ -95,8 +100,9 @@ class MemorySynthesizer:
         task_id: str,
     ) -> SynthesisResult:
         prompt = _build_prompt(current, task_result, task_id)
-        output = await self._backend.run(prompt)
+        output, usage = await self._backend.run(prompt)
         return SynthesisResult(
             memory=merge_memory(current, output),
             new_beliefs=output.new_beliefs,
+            usage=usage,
         )

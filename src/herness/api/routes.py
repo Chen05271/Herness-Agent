@@ -9,17 +9,24 @@ from fastapi.responses import StreamingResponse
 
 from herness.api.live import TaskLiveHub
 from herness.api.schemas import (
+    PublicConfigFeatures,
+    PublicConfigLimits,
+    PublicConfigResponse,
     SessionUsageResponse,
     TaskCancelResponse,
     TaskCreateRequest,
     TaskMessagesResponse,
     TaskStatusResponse,
     TaskSubmitResponse,
+    UserUsageResponse,
 )
 from herness.api.security import check_user_rate_limit, require_api_key
 from herness.personas import PersonaValidationError, prepare_task_request
 from herness.api.store import TaskStore
 from herness.models.task import TaskRequest, TaskResult, TaskStatus, TokenUsage
+from herness.api.webhook import notify_task_webhook
+from herness.models.usage import UsageSource
+from herness.observability.usage_recorder import record_usage_event
 from herness.observability.usage_store import UsageStore
 from herness.orchestrator.cancellation import TaskCancellationRegistry
 from herness.orchestrator.scheduler import Orchestrator
@@ -54,19 +61,38 @@ def _get_usage_store(request: Request) -> UsageStore:
 
 
 async def _persist_task_usage(
-    usage_store: UsageStore,
     task_request: TaskRequest,
     result: TaskResult,
 ) -> None:
-    if result.usage.total_tokens <= 0 and result.usage.requests <= 0:
-        return
-    await usage_store.record_task_usage(
-        task_id=result.task_id,
+    await record_usage_event(
+        source=UsageSource.ORCHESTRATOR,
+        usage=result.usage,
         user_id=task_request.user_id,
         session_id=task_request.session_id,
+        event_id=result.task_id,
         status=result.status,
-        usage=result.usage,
     )
+
+
+async def _check_token_budget(
+    usage_store: UsageStore,
+    settings,
+    user_id: str,
+    session_id: str,
+) -> None:
+    if settings.token_budget_per_user > 0:
+        user_usage = await usage_store.get_user_usage(user_id)
+        if user_usage.total_tokens >= settings.token_budget_per_user:
+            raise HTTPException(status_code=429, detail="用户 token 配额已用尽")
+    if settings.token_budget_per_session > 0:
+        session_usage = await usage_store.get_session_usage(user_id, session_id)
+        if session_usage.total_tokens >= settings.token_budget_per_session:
+            raise HTTPException(status_code=429, detail="会话 token 配额已用尽")
+
+
+def _resolve_webhook_url(settings, metadata: dict) -> str:
+    override = str(metadata.get("webhook_url") or "").strip()
+    return override or settings.webhook_url.strip()
 
 
 async def _execute_task(
@@ -76,6 +102,8 @@ async def _execute_task(
     cancellation_registry: TaskCancellationRegistry,
     usage_store: UsageStore,
     task_request: TaskRequest,
+    *,
+    settings,
 ) -> None:
     """后台执行调度器并回写任务状态。"""
     task_id = task_request.task_id or ""
@@ -95,20 +123,28 @@ async def _execute_task(
     try:
         result = await orchestrator.run(task_request, on_message=listener)
         store.complete(result)
-        await _persist_task_usage(usage_store, task_request, result)
+        await _persist_task_usage(task_request, result)
     except Exception:
         logger.exception("任务执行异常 task_id=%s", task_id)
-        store.complete(
-            TaskResult(
-                task_id=task_id,
-                status=TaskStatus.FAILED,
-                error="任务执行异常",
-            )
+        failed = TaskResult(
+            task_id=task_id,
+            status=TaskStatus.FAILED,
+            error="任务执行异常",
         )
+        store.complete(failed)
+        await _persist_task_usage(task_request, failed)
     finally:
         record = store.get(task_id)
         status = record.status if record else TaskStatus.FAILED
         await live_hub.finish_task(task_id, status)
+        if record and record.result:
+            webhook_url = _resolve_webhook_url(settings, task_request.metadata)
+            await notify_task_webhook(
+                webhook_url,
+                task_request=task_request,
+                result=record.result,
+                timeout_seconds=settings.webhook_timeout_seconds,
+            )
 
 
 @router.post("/tasks", response_model=TaskSubmitResponse, status_code=202)
@@ -129,6 +165,14 @@ async def submit_task(
     live_hub = _get_live_hub(request)
     cancellation_registry = _get_cancellation_registry(request)
     usage_store = _get_usage_store(request)
+    settings = request.app.state.settings
+
+    await _check_token_budget(
+        usage_store,
+        settings,
+        prepared.user_id,
+        prepared.session_id,
+    )
 
     record = store.create(prepared)
     cancellation_registry.mark_pending(record.task_id)
@@ -140,6 +184,7 @@ async def submit_task(
         cancellation_registry,
         usage_store,
         record.request,
+        settings=settings,
     )
 
     return TaskSubmitResponse(
@@ -268,4 +313,31 @@ async def get_session_usage(
         user_id=user_id,
         session_id=session_id,
         usage=usage,
+    )
+
+
+@router.get("/users/{user_id}/usage", response_model=UserUsageResponse)
+async def get_user_usage(user_id: str, request: Request) -> UserUsageResponse:
+    """查询用户累计 token 用量（含 Orchestrator / Dreaming / Embedding 等）。"""
+    usage_store = _get_usage_store(request)
+    usage = await usage_store.get_user_usage(user_id)
+    return UserUsageResponse(user_id=user_id, usage=usage)
+
+
+@router.get("/config/public", response_model=PublicConfigResponse)
+async def get_public_config(request: Request) -> PublicConfigResponse:
+    """返回非敏感公开配置，供前端展示能力与配额上限。"""
+    settings = request.app.state.settings
+    return PublicConfigResponse(
+        llm_model=settings.llm_model,
+        features=PublicConfigFeatures(
+            rag_enabled=settings.rag_enabled,
+            dreaming_enabled=settings.dreaming_enabled,
+            hereness_enabled=settings.hereness_enabled,
+            agri_commerce_enabled=settings.agri_commerce_enabled,
+        ),
+        limits=PublicConfigLimits(
+            token_budget_per_user=settings.token_budget_per_user,
+            token_budget_per_session=settings.token_budget_per_session,
+        ),
     )

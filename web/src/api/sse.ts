@@ -1,8 +1,6 @@
 import type { StreamEvent, TaskFinishedEvent, TaskMessage } from "@/types/herness";
 import { isTaskFinishedEvent } from "@/types/herness";
-
-const API_BASE = import.meta.env.VITE_API_BASE ?? "/api";
-const API_KEY = import.meta.env.VITE_API_KEY ?? "";
+import { getApiBase, getApiKey } from "@/lib/apiConfig";
 
 export interface TaskStreamOptions {
   onMessage: (message: TaskMessage) => void;
@@ -18,11 +16,13 @@ export async function subscribeTaskStream(
   const headers: Record<string, string> = {
     Accept: "text/event-stream",
   };
-  if (API_KEY) {
-    headers.Authorization = `Bearer ${API_KEY}`;
+  const apiKey = getApiKey();
+  if (apiKey) {
+    headers.Authorization = `Bearer ${apiKey}`;
   }
 
-  const res = await fetch(`${API_BASE}/v1/tasks/${taskId}/stream`, {
+  const base = getApiBase().replace(/\/$/, "");
+  const res = await fetch(`${base}/v1/tasks/${taskId}/stream`, {
     headers,
     signal: options.signal,
   });

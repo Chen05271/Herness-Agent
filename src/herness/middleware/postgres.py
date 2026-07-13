@@ -229,11 +229,19 @@ class PostgresMiddleware:
 
     async def _ensure_schema(self) -> None:
 
+        from herness.observability.usage_store import usage_schema_comments_sql, usage_schema_sql
+
         schema_sql = files("herness.middleware").joinpath("schema.sql").read_text(encoding="utf-8")
+        comments_sql = files("herness.middleware").joinpath("schema_comments.sql").read_text(
+            encoding="utf-8"
+        )
+        schema_sql = f"{schema_sql.rstrip()}\n\n{usage_schema_sql()}"
 
         async with self._pool.acquire() as conn:
 
             await conn.execute(schema_sql)
+            await conn.execute(comments_sql)
+            await conn.execute(usage_schema_comments_sql())
 
 
 
@@ -286,6 +294,14 @@ class PostgresMiddleware:
                 ON beliefs USING hnsw (fact_embedding vector_cosine_ops)
 
                 """
+
+                )
+
+                await conn.execute(
+
+                    "COMMENT ON COLUMN beliefs.fact_embedding IS "
+
+                    "'信念语义向量（pgvector，用于 Hereness 相似度检索）'"
 
                 )
 
@@ -393,13 +409,19 @@ class PostgresMiddleware:
 
         collection_id: str = "default",
 
+        user_id: str = "",
+
     ) -> RagSearchResult:
 
         if self._rag_pipeline is None:
 
             return RagSearchResult(query=query, collection_id=collection_id, hits=[])
 
-        return await self._rag_pipeline.search(query, collection_id=collection_id)
+        return await self._rag_pipeline.search(
+            query,
+            collection_id=collection_id,
+            user_id=user_id,
+        )
 
 
 
@@ -595,7 +617,7 @@ class PostgresMiddleware:
 
 
 
-        query_vector = await self._embedding_client.embed_one(claim)
+        query_vector = await self._embedding_client.embed_one(claim, user_id=user_id)
 
         rows = await self._pool.fetch(
 
@@ -655,13 +677,13 @@ class PostgresMiddleware:
 
 
 
-    async def _embed_fact(self, fact: str) -> list[float] | None:
+    async def _embed_fact(self, fact: str, *, user_id: str) -> list[float] | None:
 
         if not self._hereness_vector_enabled or self._embedding_client is None:
 
             return None
 
-        return await self._embedding_client.embed_one(fact)
+        return await self._embedding_client.embed_one(fact, user_id=user_id)
 
 
 
@@ -890,6 +912,36 @@ class PostgresMiddleware:
             output = json.loads(output)
 
         return WorkerOutput.model_validate(output)
+
+
+
+    async def get_task_metadata(self, user_id: str, task_id: str) -> dict[str, Any]:
+
+        row = await self._pool.fetchrow(
+
+            "SELECT metadata FROM task_results WHERE task_id = $1 AND user_id = $2",
+
+            task_id,
+
+            user_id,
+
+        )
+
+        if row is None:
+
+            return {}
+
+        metadata = row["metadata"]
+
+        if isinstance(metadata, str):
+
+            metadata = json.loads(metadata)
+
+        if not isinstance(metadata, dict):
+
+            return {}
+
+        return dict(metadata)
 
 
 
@@ -1187,7 +1239,7 @@ class PostgresMiddleware:
 
 
 
-        embedding = await self._embed_fact(fact)
+        embedding = await self._embed_fact(fact, user_id=user_id)
 
         if embedding is not None:
 
@@ -1293,7 +1345,7 @@ class PostgresMiddleware:
 
         for row in rows:
 
-            embedding = await self._embedding_client.embed_one(row["fact"])
+            embedding = await self._embedding_client.embed_one(row["fact"], user_id=user_id)
 
             await self._pool.execute(
 

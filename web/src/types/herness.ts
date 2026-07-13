@@ -67,6 +67,30 @@ export interface SessionUsageResponse {
   usage: TokenUsage;
 }
 
+export interface UserUsageResponse {
+  user_id: string;
+  usage: TokenUsage;
+}
+
+export interface PublicConfigFeatures {
+  rag_enabled: boolean;
+  dreaming_enabled: boolean;
+  hereness_enabled: boolean;
+  agri_commerce_enabled: boolean;
+}
+
+export interface PublicConfigLimits {
+  token_budget_per_user: number;
+  token_budget_per_session: number;
+}
+
+export interface PublicConfigResponse {
+  llm_model: string;
+  api_version: string;
+  features: PublicConfigFeatures;
+  limits: PublicConfigLimits;
+}
+
 export interface TaskCancelResponse {
   task_id: string;
   status: TaskStatus;

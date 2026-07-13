@@ -4,6 +4,8 @@ import { hernessApi } from "@/api/client";
 import { subscribeTaskStream } from "@/api/sse";
 import {
   clearMessages,
+  deleteAllSessions,
+  deleteAllSessionsForPersona,
   deleteSession,
   loadMessages,
   loadSessions,
@@ -19,6 +21,7 @@ import {
 } from "@/lib/messageFinalize";
 import { createSessionId, validatePersonaIdentity } from "@/lib/persona";
 import { progressFromTraceMessage } from "@/lib/progress";
+import { formatSubmitError, resolveQuotaWarning } from "@/lib/quota";
 import type {
   ChatMessage,
   ChatSession,
@@ -50,6 +53,7 @@ export const useChatStore = defineStore("chat", () => {
   const activeTaskId = ref<string | null>(null);
   const activeTrace = shallowRef<TaskMessage[]>([]);
   const sessionUsage = ref<TokenUsage | null>(null);
+  const userUsage = ref<TokenUsage | null>(null);
   const streamAbort = shallowRef<AbortController | null>(null);
   const error = ref<string | null>(null);
 
@@ -75,6 +79,18 @@ export const useChatStore = defineStore("chat", () => {
         (m) => m.taskId && m.status && isInFlightStatus(m.status),
       ),
   );
+
+  const quotaWarning = computed(() => {
+    if (!settings.showQuotaWarning) return null;
+    const limits = settings.publicConfig?.limits;
+    if (!limits) return null;
+    return resolveQuotaWarning(
+      sessionUsage.value,
+      userUsage.value,
+      limits.token_budget_per_session,
+      limits.token_budget_per_user,
+    );
+  });
 
   async function repairStaleMessages(
     loaded: ChatMessage[],
@@ -138,14 +154,20 @@ export const useChatStore = defineStore("chat", () => {
   async function refreshSessionUsage(sessionId = activeSessionId.value) {
     if (!sessionId) {
       sessionUsage.value = null;
+      userUsage.value = null;
       return;
     }
     try {
       const ctx = settings.getPersonaContext(persona.value);
-      const resp = await hernessApi.getSessionUsage(sessionId, ctx.userId);
-      sessionUsage.value = resp.usage;
+      const [sessionResp, userResp] = await Promise.all([
+        hernessApi.getSessionUsage(sessionId, ctx.userId),
+        hernessApi.getUserUsage(ctx.userId),
+      ]);
+      sessionUsage.value = sessionResp.usage;
+      userUsage.value = userResp.usage;
     } catch {
       sessionUsage.value = null;
+      userUsage.value = null;
     }
   }
 
@@ -180,6 +202,7 @@ export const useChatStore = defineStore("chat", () => {
     activeTrace.value = [];
     error.value = null;
     sessionUsage.value = null;
+    userUsage.value = null;
   }
 
   async function selectSession(sessionId: string) {
@@ -326,7 +349,7 @@ export const useChatStore = defineStore("chat", () => {
       await refreshSessionUsage(sessionId);
       await touchSession(sessionId, { updatedAt: new Date().toISOString() });
     } catch (err) {
-      const message = err instanceof Error ? err.message : "发送失败";
+      const message = formatSubmitError(err);
       error.value = message;
       const failed = patchMessage(assistantId, {
         status: "failed",
@@ -360,6 +383,9 @@ export const useChatStore = defineStore("chat", () => {
         if (cancelled) {
           await updateMessage(cancelled);
         }
+      }
+      if (activeSessionId.value) {
+        await refreshSessionUsage(activeSessionId.value);
       }
     } catch (err) {
       error.value = err instanceof Error ? err.message : "取消失败";
@@ -401,10 +427,36 @@ export const useChatStore = defineStore("chat", () => {
   async function checkApiHealth() {
     try {
       await hernessApi.healthCheck();
-      settings.apiConnected = true;
+      settings.markApiChecked(true);
+      await settings.fetchPublicConfig();
     } catch {
-      settings.apiConnected = false;
+      settings.markApiChecked(false);
     }
+  }
+
+  async function purgePersonaSessions(targetPersona: Persona) {
+    await deleteAllSessionsForPersona(targetPersona);
+    if (persona.value !== targetPersona) return;
+    sessions.value = [];
+    activeSessionId.value = null;
+    messages.value = [];
+    sessionUsage.value = null;
+    userUsage.value = null;
+    activeTrace.value = [];
+    error.value = null;
+    await createNewSession();
+  }
+
+  async function purgeAllSessions() {
+    await deleteAllSessions();
+    sessions.value = [];
+    activeSessionId.value = null;
+    messages.value = [];
+    sessionUsage.value = null;
+    userUsage.value = null;
+    activeTrace.value = [];
+    error.value = null;
+    await createNewSession();
   }
 
   return {
@@ -416,6 +468,8 @@ export const useChatStore = defineStore("chat", () => {
     activeTaskId,
     activeTrace,
     sessionUsage,
+    userUsage,
+    quotaWarning,
     error,
     activeSession,
     hasActiveTask,
@@ -429,5 +483,7 @@ export const useChatStore = defineStore("chat", () => {
     exportActiveSession,
     checkApiHealth,
     refreshSessionUsage,
+    purgePersonaSessions,
+    purgeAllSessions,
   };
 });

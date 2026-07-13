@@ -39,12 +39,21 @@ async def _default_lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.store = create_task_store(settings)
     if not hasattr(app.state, "usage_store") or app.state.usage_store is None:
         app.state.usage_store = await create_usage_store(settings)
+    from herness.observability.usage_recorder import bind_usage_store
+
+    bind_usage_store(
+        app.state.usage_store,
+        metrics_enabled=settings.metrics_enabled,
+    )
     try:
         yield
     finally:
         await close_middleware(app.state.middleware)
         close_task_store(app.state.store)
         await close_usage_store(getattr(app.state, "usage_store", None))
+        from herness.observability.usage_recorder import bind_usage_store
+
+        bind_usage_store(None)
 
 
 def create_app(

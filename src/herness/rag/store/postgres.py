@@ -4,12 +4,17 @@ from __future__ import annotations
 
 import json
 import logging
+from importlib.resources import files
 from typing import Any
 
 from herness.middleware.beliefs import extract_search_terms
 from herness.rag.grep.retrieval import build_grep_patterns
 
 logger = logging.getLogger(__name__)
+
+
+def _rag_schema_comments_sql() -> str:
+    return files("herness.rag.store").joinpath("schema_comments.sql").read_text(encoding="utf-8")
 
 
 class PostgresKnowledgeStore:
@@ -30,6 +35,7 @@ class PostgresKnowledgeStore:
         """创建 RAG 表与向量列；pgvector 不可用时禁用向量检索。"""
         async with self._pool.acquire() as conn:
             await conn.execute(_BASE_SCHEMA_SQL)
+            await conn.execute(_rag_schema_comments_sql())
 
             if not self._vector_enabled:
                 return True
@@ -54,6 +60,10 @@ class PostgresKnowledgeStore:
                 ON kb_chunks USING hnsw (embedding vector_cosine_ops)
                 WHERE embedding IS NOT NULL
                 """
+            )
+            await conn.execute(
+                "COMMENT ON COLUMN kb_chunks.embedding IS "
+                "'分块语义向量（pgvector，用于 RAG 向量检索）'"
             )
         return True
 

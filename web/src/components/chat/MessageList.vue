@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from "vue";
+import { useSettingsStore } from "@/stores/settings";
 import type { AppTheme } from "@/lib/theme";
 import type { ChatMessage } from "@/types/herness";
 import MessageBubble from "./MessageBubble.vue";
@@ -13,6 +14,8 @@ const props = defineProps<{
 const emit = defineEmits<{
   selectPrompt: [text: string];
 }>();
+
+const settings = useSettingsStore();
 
 const CONSUMER_PROMPTS = [
   { label: "查订单", text: "帮我查一下最近的订单状态和物流信息" },
@@ -42,6 +45,13 @@ const emptyDesc = computed(() =>
 
 const containerRef = ref<HTMLElement | null>(null);
 
+function scrollToBottom() {
+  if (!settings.autoScrollToBottom) return;
+  if (containerRef.value) {
+    containerRef.value.scrollTop = containerRef.value.scrollHeight;
+  }
+}
+
 function handlePromptClick(text: string) {
   if (props.promptDisabled) return;
   emit("selectPrompt", text);
@@ -51,7 +61,7 @@ watch(
   () => props.messages.length,
   async () => {
     await nextTick();
-    containerRef.value && (containerRef.value.scrollTop = containerRef.value.scrollHeight);
+    scrollToBottom();
   },
 );
 
@@ -59,7 +69,7 @@ watch(
   () => props.messages.at(-1)?.content,
   async () => {
     await nextTick();
-    containerRef.value && (containerRef.value.scrollTop = containerRef.value.scrollHeight);
+    scrollToBottom();
   },
 );
 
@@ -67,7 +77,7 @@ watch(
   () => props.messages.at(-1)?.status,
   async () => {
     await nextTick();
-    containerRef.value && (containerRef.value.scrollTop = containerRef.value.scrollHeight);
+    scrollToBottom();
   },
 );
 
@@ -75,7 +85,7 @@ watch(
   () => props.messages.at(-1)?.progressText,
   async () => {
     await nextTick();
-    containerRef.value && (containerRef.value.scrollTop = containerRef.value.scrollHeight);
+    scrollToBottom();
   },
 );
 </script>

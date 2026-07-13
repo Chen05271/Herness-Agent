@@ -11,6 +11,8 @@ from herness.config import Settings
 from herness.dreaming.synthesizer import MemorySynthesizer
 from herness.observability.logging import log_event
 from herness.observability.metrics import get_metrics_registry
+from herness.models.usage import UsageSource
+from herness.observability.usage_recorder import record_usage_event
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +74,20 @@ class DreamingWorker:
             task_id=task_id,
         )
         updated = synthesis.memory
+
+        session_id = ""
+        get_metadata = getattr(self._middleware, "get_task_metadata", None)
+        if get_metadata is not None:
+            meta = await get_metadata(user_id, task_id)
+            session_id = str(meta.get("session_id") or "")
+
+        await record_usage_event(
+            source=UsageSource.DREAMING,
+            usage=synthesis.usage,
+            user_id=user_id,
+            session_id=session_id,
+            event_id=f"{task_id}:dreaming",
+        )
 
         save = getattr(self._middleware, "save_pre_synthesized_memory", None)
         if save is None:

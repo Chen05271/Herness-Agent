@@ -4,11 +4,14 @@ import type { ChatMessage } from "@/types/herness";
 import { statusLabel } from "@/lib/persona";
 import { renderMarkdown } from "@/lib/markdown";
 import { formatUsageSummary, resolveUsage } from "@/lib/usage";
+import { useSettingsStore } from "@/stores/settings";
 import StreamingIndicator from "./StreamingIndicator.vue";
 
 const props = defineProps<{
   message: ChatMessage;
 }>();
+
+const settings = useSettingsStore();
 
 const isUser = computed(() => props.message.role === "user");
 const isRunning = computed(
@@ -29,6 +32,7 @@ const renderedContent = computed(() => {
 });
 
 const usageSummary = computed(() => {
+  if (!settings.showTokenUsage) return "";
   const usage = resolveUsage(props.message.usage, props.message.trace ?? []);
   return formatUsageSummary(usage);
 });
@@ -51,7 +55,7 @@ const usageSummary = computed(() => {
     </div>
 
     <div
-      class="max-w-[min(640px,82%)] rounded-2xl px-5 py-4"
+      class="chat-message-bubble max-w-[min(640px,82%)] rounded-2xl px-5 py-4"
       :class="
         isUser
           ? 'bg-white/[0.04] text-zinc-200/90'

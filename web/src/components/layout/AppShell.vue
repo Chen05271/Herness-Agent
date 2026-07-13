@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { useBreakpoints, useScrollLock } from "@vueuse/core";
 import { computed, watch } from "vue";
+import { RouterLink } from "vue-router";
 import { useChatStore } from "@/stores/chat";
 import { useSettingsStore } from "@/stores/settings";
 import { themeAttr, type AppTheme } from "@/lib/theme";
@@ -90,6 +91,14 @@ watch(traceDrawerOpen, (open) => {
 
           <div class="flex shrink-0 items-center gap-4">
             <ApiStatusBadge :connected="settings.apiConnected" />
+
+            <RouterLink
+              to="/settings"
+              class="rounded-full px-2.5 py-1 text-[11px] font-normal text-subtle transition hover:theme-accent-text"
+              title="设置"
+            >
+              设置
+            </RouterLink>
 
             <button
               v-if="showTrace"

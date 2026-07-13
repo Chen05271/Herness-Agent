@@ -61,6 +61,7 @@ async def rag_ingest(body: RagIngestRequest, request: Request) -> RagIngestRespo
         settings=settings,
         embedding_client=embedding_client,
         persona=body.persona,
+        user_id=body.user_id,
     )
 
     communities = 0
@@ -88,7 +89,11 @@ async def rag_search(body: RagSearchRequest, request: Request) -> RagSearchRespo
     if search is None:
         raise HTTPException(status_code=503, detail="当前中台不支持 RAG 检索")
 
-    result = await search(body.query, collection_id=body.collection_id)
+    result = await search(
+        body.query,
+        collection_id=body.collection_id,
+        user_id=body.user_id,
+    )
     hits = [
         RagHitResponse(
             chunk_id=hit.chunk_id,

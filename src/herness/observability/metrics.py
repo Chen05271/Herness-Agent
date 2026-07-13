@@ -27,6 +27,7 @@ class MetricsRegistry:
     token_input_total: int = 0
     token_output_total: int = 0
     token_requests_total: int = 0
+    tokens_by_source: dict[str, dict[str, int]] = field(default_factory=dict)
     _lock: Lock = field(default_factory=Lock, repr=False)
 
     def record_task_finished(
@@ -71,6 +72,7 @@ class MetricsRegistry:
         input_tokens: int,
         output_tokens: int,
         requests: int = 0,
+        source: str = "orchestrator",
     ) -> None:
         if input_tokens <= 0 and output_tokens <= 0 and requests <= 0:
             return
@@ -78,6 +80,13 @@ class MetricsRegistry:
             self.token_input_total += max(input_tokens, 0)
             self.token_output_total += max(output_tokens, 0)
             self.token_requests_total += max(requests, 0)
+            bucket = self.tokens_by_source.setdefault(
+                source,
+                {"input_total": 0, "output_total": 0, "requests_total": 0},
+            )
+            bucket["input_total"] += max(input_tokens, 0)
+            bucket["output_total"] += max(output_tokens, 0)
+            bucket["requests_total"] += max(requests, 0)
 
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
@@ -112,6 +121,7 @@ class MetricsRegistry:
                     "output_total": self.token_output_total,
                     "total": self.token_input_total + self.token_output_total,
                     "requests_total": self.token_requests_total,
+                    "by_source": dict(self.tokens_by_source),
                 },
             }
 

@@ -217,6 +217,10 @@ class Orchestrator:
                 return self._finalize(
                     state, self._fail(state, f"步骤执行失败: {type(exc).__name__}: {exc}")
                 )
+        except Exception as exc:
+            return self._finalize(
+                state, self._fail(state, f"任务启动失败: {type(exc).__name__}: {exc}")
+            )
         finally:
             if self._cancellation_registry is not None:
                 self._cancellation_registry.unregister(state.task_id)
@@ -657,6 +661,7 @@ class Orchestrator:
                 input_tokens=step.input_tokens,
                 output_tokens=step.output_tokens,
                 requests=step.requests,
+                source="orchestrator",
             )
         return step
 

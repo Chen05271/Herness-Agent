@@ -5,6 +5,7 @@ import AppShell from "@/components/layout/AppShell.vue";
 import Composer from "@/components/chat/Composer.vue";
 import MessageList from "@/components/chat/MessageList.vue";
 import MerchantInfoBar from "@/components/ops/MerchantInfoBar.vue";
+import QuotaWarningBar from "@/components/ui/QuotaWarningBar.vue";
 import { useChatStore } from "@/stores/chat";
 import { useConfirmStore } from "@/stores/confirm";
 
@@ -102,7 +103,11 @@ function handleExport() {
         @cancel="handleCancel"
         @clear="handleClear"
         @export="handleExport"
-      />
+      >
+        <template v-if="chat.quotaWarning" #error>
+          <QuotaWarningBar :warning="chat.quotaWarning" />
+        </template>
+      </Composer>
     </div>
   </AppShell>
 </template>

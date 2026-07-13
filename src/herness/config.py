@@ -274,6 +274,26 @@ class Settings(BaseSettings):
         default=True,
         description="是否采集运行时指标（/metrics 端点）",
     )
+    token_budget_per_user: int = Field(
+        default=0,
+        ge=0,
+        description="单用户累计 token 上限；0 表示不限",
+    )
+    token_budget_per_session: int = Field(
+        default=0,
+        ge=0,
+        description="单 session 累计 token 上限；0 表示不限",
+    )
+    webhook_url: str = Field(
+        default="",
+        description="任务完成时 POST 通知的全局 Webhook URL；可被 metadata.webhook_url 覆盖",
+    )
+    webhook_timeout_seconds: float = Field(
+        default=5.0,
+        gt=0,
+        le=30.0,
+        description="Webhook HTTP 超时（秒）",
+    )
 
     # ── 智慧农业电商 BFF（mock / HTTP 可切换）──
     agri_commerce_enabled: bool = Field(
