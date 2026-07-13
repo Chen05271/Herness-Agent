@@ -77,6 +77,7 @@ export interface PublicConfigFeatures {
   dreaming_enabled: boolean;
   hereness_enabled: boolean;
   agri_commerce_enabled: boolean;
+  otel_enabled: boolean;
 }
 
 export interface PublicConfigLimits {

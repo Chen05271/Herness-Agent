@@ -64,6 +64,7 @@ class PublicConfigFeatures(BaseModel):
     dreaming_enabled: bool = False
     hereness_enabled: bool = False
     agri_commerce_enabled: bool = False
+    otel_enabled: bool = False
 
 
 class PublicConfigLimits(BaseModel):

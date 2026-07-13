@@ -38,6 +38,7 @@ from herness.models.task import (
 from herness.models.worker import WorkerKind, WorkerOutput
 from herness.observability.logging import log_event, set_trace_id
 from herness.observability.metrics import MetricsRegistry, get_metrics_registry
+from herness.observability.tracing import start_span
 from herness.observability.usage import usage_from_run, usage_payload
 from herness.orchestrator.cancellation import TaskCancellationRegistry, TaskCancelledError
 from herness.personas import get_persona, prepare_task_request
@@ -117,6 +118,25 @@ class Orchestrator:
         if self._cancellation_registry is not None:
             self._cancellation_registry.register(state.task_id)
 
+        persona = get_persona(state.request.metadata)
+        with start_span(
+            "orchestrator.run",
+            task_id=state.task_id,
+            attributes={
+                "herness.user_id": state.request.user_id,
+                "herness.session_id": state.request.session_id,
+                "herness.persona": persona,
+            },
+        ):
+            try:
+                return await self._run_task_loop(state, request)
+            finally:
+                if self._cancellation_registry is not None:
+                    self._cancellation_registry.unregister(state.task_id)
+                self._on_message = None
+
+    async def _run_task_loop(self, state: TaskState, request: TaskRequest) -> TaskResult:
+        """任务主循环（记忆加载 → 多轮 Supervisor / Worker / Critic）。"""
         # 任务启动：从中台拉取预合成全局记忆，注入总管
         try:
             persona = get_persona(state.request.metadata)
@@ -221,10 +241,6 @@ class Orchestrator:
             return self._finalize(
                 state, self._fail(state, f"任务启动失败: {type(exc).__name__}: {exc}")
             )
-        finally:
-            if self._cancellation_registry is not None:
-                self._cancellation_registry.unregister(state.task_id)
-            self._on_message = None
 
     # ── 内部：调用各 Agent（带单步超时 + 重试）──
 
@@ -271,29 +287,34 @@ class Orchestrator:
         state: TaskState,
         step_name: str,
         coro_factory: Callable[[], Awaitable[T]],
+        *,
+        span_name: str | None = None,
+        span_attributes: dict[str, Any] | None = None,
     ) -> T:
         """单步执行包装：瞬时错误时按 max_retries_per_step 重试。"""
         max_attempts = self.config.max_retries_per_step + 1
         last_error: BaseException | None = None
+        resolved_span = span_name or f"orchestrator.{step_name.lower()}"
 
-        for attempt in range(1, max_attempts + 1):
-            try:
-                self._check_cancelled(state)
-                return await coro_factory()
-            except TaskCancelledError:
-                raise
-            except _RETRIABLE_EXCEPTIONS as exc:
-                last_error = exc
-                if attempt >= max_attempts:
+        with start_span(resolved_span, attributes=span_attributes):
+            for attempt in range(1, max_attempts + 1):
+                try:
+                    self._check_cancelled(state)
+                    return await coro_factory()
+                except TaskCancelledError:
                     raise
-                self._log(
-                    state,
-                    AgentRole.ORCHESTRATOR,
-                    f"{step_name} 第 {attempt}/{max_attempts} 次失败"
-                    f"（{type(exc).__name__}），重试中…",
-                )
-                if self._metrics_enabled:
-                    self._metrics.record_step_retry(step_name)
+                except _RETRIABLE_EXCEPTIONS as exc:
+                    last_error = exc
+                    if attempt >= max_attempts:
+                        raise
+                    self._log(
+                        state,
+                        AgentRole.ORCHESTRATOR,
+                        f"{step_name} 第 {attempt}/{max_attempts} 次失败"
+                        f"（{type(exc).__name__}），重试中…",
+                    )
+                    if self._metrics_enabled:
+                        self._metrics.record_step_retry(step_name)
 
         assert last_error is not None
         raise last_error
@@ -350,7 +371,13 @@ class Orchestrator:
             )
             return output
 
-        return await self._run_step_with_retry(state, "Supervisor", _call)
+        return await self._run_step_with_retry(
+            state,
+            "Supervisor",
+            _call,
+            span_name="orchestrator.supervisor",
+            span_attributes={"herness.round_index": state.round_index},
+        )
 
     async def _run_workers_batch(
         self,
@@ -463,7 +490,16 @@ class Orchestrator:
             return output
 
         step_name = f"Worker({worker_type})"
-        return await self._run_step_with_retry(state, step_name, _call)
+        return await self._run_step_with_retry(
+            state,
+            step_name,
+            _call,
+            span_name="orchestrator.worker",
+            span_attributes={
+                "herness.round_index": state.round_index,
+                "herness.worker_type": worker_type,
+            },
+        )
 
     async def _handle_worker_outputs(
         self,
@@ -553,7 +589,13 @@ class Orchestrator:
             )
             return output
 
-        return await self._run_step_with_retry(state, "Critic", _call)
+        return await self._run_step_with_retry(
+            state,
+            "Critic",
+            _call,
+            span_name="orchestrator.critic",
+            span_attributes={"herness.round_index": state.round_index},
+        )
 
     # ── 内部：终态处理 ──
 

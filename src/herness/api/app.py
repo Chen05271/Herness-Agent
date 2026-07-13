@@ -15,6 +15,11 @@ from herness.middleware.factory import close_middleware, create_middleware
 from herness.middleware.protocol import DataMiddleware
 from herness.observability.logging import configure_logging
 from herness.observability.metrics import get_metrics_registry
+from herness.observability.tracing import (
+    instrument_fastapi_app,
+    setup_tracing,
+    shutdown_tracing,
+)
 from herness.observability.usage_store import close_usage_store, create_usage_store
 from herness.orchestrator.cancellation import TaskCancellationRegistry
 from herness.orchestrator.scheduler import Orchestrator
@@ -45,9 +50,12 @@ async def _default_lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.usage_store,
         metrics_enabled=settings.metrics_enabled,
     )
+    setup_tracing(settings)
+    instrument_fastapi_app(app)
     try:
         yield
     finally:
+        shutdown_tracing()
         await close_middleware(app.state.middleware)
         close_task_store(app.state.store)
         await close_usage_store(getattr(app.state, "usage_store", None))

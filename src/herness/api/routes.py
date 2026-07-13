@@ -335,6 +335,7 @@ async def get_public_config(request: Request) -> PublicConfigResponse:
             dreaming_enabled=settings.dreaming_enabled,
             hereness_enabled=settings.hereness_enabled,
             agri_commerce_enabled=settings.agri_commerce_enabled,
+            otel_enabled=settings.otel_enabled,
         ),
         limits=PublicConfigLimits(
             token_budget_per_user=settings.token_budget_per_user,

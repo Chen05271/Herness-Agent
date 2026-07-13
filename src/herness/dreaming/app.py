@@ -11,6 +11,7 @@ from herness.dreaming.synthesizer import MemorySynthesizer
 from herness.dreaming.worker import DreamingWorker
 from herness.middleware.factory import close_middleware, create_middleware
 from herness.observability.logging import configure_logging
+from herness.observability.tracing import setup_tracing, shutdown_tracing
 from herness.observability.usage_recorder import bind_usage_store
 from herness.observability.usage_store import create_usage_store, close_usage_store
 
@@ -20,6 +21,7 @@ logger = logging.getLogger(__name__)
 
 async def run_dreaming_worker() -> None:
     settings = get_settings()
+    setup_tracing(settings)
     if not settings.dreaming_enabled:
         logger.warning("DREAMING_ENABLED=false，仍启动 Worker（可设 DREAMING_ENABLED=true 显式启用）")
 
@@ -32,6 +34,7 @@ async def run_dreaming_worker() -> None:
     try:
         await worker.run_forever()
     finally:
+        shutdown_tracing()
         await close_usage_store(usage_store)
         bind_usage_store(None)
         await close_middleware(middleware)

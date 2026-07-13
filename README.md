@@ -375,9 +375,31 @@ POST /v1/rag/ingest  {"text": "...", "collection_id": "consumer"}
 | Dreaming 成功/失败计数 | ✅ 已实现 |
 | `GET /metrics` 指标端点 | ✅ 已实现 |
 | Web 控制台审计面板 + 气泡用量 + 设置页配额 | ✅ 已实现 |
-| OpenTelemetry span 集成 | ❌ 待实现 |
+| OpenTelemetry span 集成 | ✅ 已实现（`OTEL_ENABLED` + OTLP / console） |
 
 设置 `STRUCTURED_LOGGING=true` 后，调度链路日志以纯 JSON 行输出，便于 ELK / Loki 采集。`trace_id` 等于 `task_id`，贯穿 Orchestrator 与 Dreaming Worker。
+
+**OpenTelemetry（可选）**：
+
+```env
+OTEL_ENABLED=true
+OTEL_SERVICE_NAME=herness-agent
+OTEL_EXPORTER=otlp_http          # console | otlp_http | otlp_grpc
+OTEL_ENDPOINT=http://localhost:4318/v1/traces
+```
+
+安装依赖：`pip install -e ".[otel]"`。启用后导出 span：
+
+| Span 名称 | 说明 |
+|-----------|------|
+| `orchestrator.run` | 单次任务根 span，`trace_id` 与 `task_id` 对齐 |
+| `orchestrator.supervisor` | Supervisor 每轮调用 |
+| `orchestrator.worker` | Worker 执行（含 `herness.worker_type`） |
+| `orchestrator.critic` | Critic 校验 |
+| `dreaming.process_job` | Dreaming 离线合成 |
+| HTTP（自动） | FastAPI / httpx 请求 |
+
+可对接 [Jaeger](https://www.jaegertracing.io/)、Grafana Tempo、Datadog 等 OTLP 兼容后端。
 
 **Token 用量采集**（后端为唯一数据源）：
 
@@ -641,6 +663,12 @@ py -3.11 -m pytest tests/test_middleware_postgres.py tests/test_middleware_redis
 | `RAG_RERANK_MODEL` | （空） | Cross-Encoder rerank 模型 |
 | `STRUCTURED_LOGGING` | `false` | 纯 JSON 行日志（配合 log_event） |
 | `METRICS_ENABLED` | `true` | 是否采集运行时指标 |
+| `OTEL_ENABLED` | `false` | 启用 OpenTelemetry span 导出 |
+| `OTEL_SERVICE_NAME` | `herness-agent` | OTEL `service.name` |
+| `OTEL_EXPORTER` | `otlp_http` | `console` / `otlp_http` / `otlp_grpc` |
+| `OTEL_ENDPOINT` | （空） | OTLP 端点；HTTP 默认 `http://localhost:4318/v1/traces` |
+| `OTEL_INSECURE` | `true` | gRPC exporter 是否跳过 TLS |
+| `OTEL_INSTRUMENT_HTTPX` | `true` | 自动埋点 httpx 客户端 |
 | `TOKEN_BUDGET_PER_USER` | `0` | 单用户累计 token 上限；0 不限 |
 | `TOKEN_BUDGET_PER_SESSION` | `0` | 单 session 累计 token 上限；0 不限 |
 | `AGRI_COMMERCE_ENABLED` | `false` | 农业电商 BFF 示例集成开关（默认关闭） |

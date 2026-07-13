@@ -274,6 +274,30 @@ class Settings(BaseSettings):
         default=True,
         description="是否采集运行时指标（/metrics 端点）",
     )
+    otel_enabled: bool = Field(
+        default=False,
+        description="启用 OpenTelemetry span 导出",
+    )
+    otel_service_name: str = Field(
+        default="herness-agent",
+        description="OTEL service.name 资源属性",
+    )
+    otel_exporter: Literal["console", "otlp", "otlp_http", "otlp_grpc"] = Field(
+        default="otlp_http",
+        description="Span 导出器：console | otlp_http | otlp_grpc",
+    )
+    otel_endpoint: str = Field(
+        default="",
+        description="OTLP 端点；HTTP 默认 http://localhost:4318/v1/traces",
+    )
+    otel_insecure: bool = Field(
+        default=True,
+        description="gRPC exporter 是否跳过 TLS",
+    )
+    otel_instrument_httpx: bool = Field(
+        default=True,
+        description="自动埋点 httpx 客户端（Worker http_request 等）",
+    )
     token_budget_per_user: int = Field(
         default=0,
         ge=0,

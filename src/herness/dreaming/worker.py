@@ -11,6 +11,7 @@ from herness.config import Settings
 from herness.dreaming.synthesizer import MemorySynthesizer
 from herness.observability.logging import log_event
 from herness.observability.metrics import get_metrics_registry
+from herness.observability.tracing import setup_tracing, shutdown_tracing, start_span
 from herness.models.usage import UsageSource
 from herness.observability.usage_recorder import record_usage_event
 
@@ -51,6 +52,14 @@ class DreamingWorker:
 
     async def process_job(self, user_id: str, task_id: str) -> None:
         """处理单条 Dreaming 任务：读结果 → 合成 → 写回记忆与信念。"""
+        with start_span(
+            "dreaming.process_job",
+            task_id=task_id,
+            attributes={"herness.user_id": user_id},
+        ):
+            await self._process_job_inner(user_id, task_id)
+
+    async def _process_job_inner(self, user_id: str, task_id: str) -> None:
         log_event(
             logger,
             logging.INFO,

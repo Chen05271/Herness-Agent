@@ -19,6 +19,9 @@ dev = [
     "asyncpg>=0.30",
     "fakeredis>=2.0",
     "redis>=5.0",
+    "opentelemetry-api>=1.28",
+    "opentelemetry-sdk>=1.28",
+    "opentelemetry-exporter-otlp-proto-http>=1.28",
 ]
 postgres = [
     "asyncpg>=0.30",
@@ -26,6 +29,14 @@ postgres = [
 ]
 redis = [
     "redis>=5.0",
+]
+otel = [
+    "opentelemetry-api>=1.28",
+    "opentelemetry-sdk>=1.28",
+    "opentelemetry-exporter-otlp-proto-http>=1.28",
+    "opentelemetry-exporter-otlp-proto-grpc>=1.28",
+    "opentelemetry-instrumentation-fastapi>=0.49b0",
+    "opentelemetry-instrumentation-httpx>=0.49b0",
 ]
 
 [project.scripts]

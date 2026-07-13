@@ -52,8 +52,8 @@
 | `/metrics` 运行时指标 + Token 累计 | ✅ |
 | 按任务 / session Token 持久化 | ✅ |
 | Web 控制台用量展示 | ✅ |
-| OpenTelemetry span 集成 | ❌ 待实现 |
-| Dreaming / RAG / Embedding 用量计入 | ❌ 待实现 |
+| OpenTelemetry span 集成 | ✅ |
+| Dreaming / RAG / Embedding 用量计入 | ✅ |
 
 ### P3-4 · 安全与配额
 
