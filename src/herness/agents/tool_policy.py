@@ -18,6 +18,12 @@ ALL_WORKER_TOOLS: frozenset[str] = frozenset(
         "read_text_file_tool",
         "run_python_code",
         "run_python_code_tool",
+        "ppt_master_build_pptx",
+        "ppt_master_build_pptx_tool",
+        "ppt_master_export_project",
+        "ppt_master_export_project_tool",
+        "ppt_master_export_svg_to_pptx",
+        "ppt_master_export_svg_to_pptx_tool",
     }
 )
 
@@ -26,6 +32,9 @@ _TOOL_ALIASES: dict[str, str] = {
     "http_request_tool": "http_request",
     "read_text_file_tool": "read_text_file",
     "run_python_code_tool": "run_python_code",
+    "ppt_master_build_pptx_tool": "ppt_master_build_pptx",
+    "ppt_master_export_project_tool": "ppt_master_export_project",
+    "ppt_master_export_svg_to_pptx_tool": "ppt_master_export_svg_to_pptx",
 }
 
 
@@ -42,6 +51,10 @@ def globally_enabled_tools(settings: Settings) -> set[str]:
         enabled.add("read_text_file")
     if settings.worker_tools_code_enabled:
         enabled.add("run_python_code")
+    if settings.worker_tools_ppt_enabled and settings.worker_tools_output_base_dir.strip():
+        enabled.add("ppt_master_build_pptx")
+        enabled.add("ppt_master_export_project")
+        enabled.add("ppt_master_export_svg_to_pptx")
     if settings.agri_commerce_enabled:
         enabled |= set(AGRI_COMMERCE_READ_TOOLS)
         enabled |= set(AGRI_ADMIN_TOOLS)

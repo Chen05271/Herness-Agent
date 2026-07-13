@@ -32,3 +32,10 @@ htmlcov/
 # OS
 Thumbs.db
 .DS_Store
+
+# Generated artifacts
+outputs/
+projects/
+
+# External skills (install separately — see README)
+.agents/skills/

@@ -5,13 +5,17 @@ import json
 import logging
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
+
+from herness.agents.ppt_tools import resolve_artifact_path
+from herness.agents.tools import WorkerToolError
 
 from herness.api.live import TaskLiveHub
 from herness.api.schemas import (
     PublicConfigFeatures,
     PublicConfigLimits,
     PublicConfigResponse,
+    PublicSkillInfo,
     SessionUsageResponse,
     TaskCancelResponse,
     TaskCreateRequest,
@@ -30,6 +34,7 @@ from herness.observability.usage_recorder import record_usage_event
 from herness.observability.usage_store import UsageStore
 from herness.orchestrator.cancellation import TaskCancellationRegistry
 from herness.orchestrator.scheduler import Orchestrator
+from herness.skills.loader import list_available_skills
 
 logger = logging.getLogger(__name__)
 
@@ -328,6 +333,7 @@ async def get_user_usage(user_id: str, request: Request) -> UserUsageResponse:
 async def get_public_config(request: Request) -> PublicConfigResponse:
     """返回非敏感公开配置，供前端展示能力与配额上限。"""
     settings = request.app.state.settings
+    skill_items = list_available_skills(settings=settings)
     return PublicConfigResponse(
         llm_model=settings.llm_model,
         features=PublicConfigFeatures(
@@ -336,9 +342,51 @@ async def get_public_config(request: Request) -> PublicConfigResponse:
             hereness_enabled=settings.hereness_enabled,
             agri_commerce_enabled=settings.agri_commerce_enabled,
             otel_enabled=settings.otel_enabled,
+            skills_enabled=settings.skills_enabled,
+            ppt_enabled=settings.worker_tools_ppt_enabled,
         ),
         limits=PublicConfigLimits(
             token_budget_per_user=settings.token_budget_per_user,
             token_budget_per_session=settings.token_budget_per_session,
         ),
+        skills=[
+            PublicSkillInfo(
+                name=item["name"],
+                description=item.get("description", ""),
+                worker_kind=item.get("worker_kind", "default"),
+            )
+            for item in skill_items
+        ],
+    )
+
+
+@router.get("/tasks/{task_id}/artifacts/{artifact_path:path}")
+async def download_task_artifact(
+    task_id: str,
+    artifact_path: str,
+    request: Request,
+) -> FileResponse:
+    """下载任务产物（如生成的 PPT）。"""
+    settings = request.app.state.settings
+    store = _get_store(request)
+    record = store.get(task_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="任务不存在")
+
+    normalized = artifact_path.replace("\\", "/").lstrip("/")
+    if not normalized.startswith(f"{task_id}/"):
+        raise HTTPException(status_code=403, detail="无权访问该产物")
+
+    try:
+        file_path = resolve_artifact_path(settings, normalized)
+    except WorkerToolError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if not file_path.is_file():
+        raise HTTPException(status_code=404, detail="产物文件不存在")
+
+    return FileResponse(
+        path=file_path,
+        filename=file_path.name,
+        media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
     )

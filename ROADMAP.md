@@ -2,7 +2,7 @@
 
 本文档描述框架从当前 **Demo / 架构骨架** 演进到 **可用 MVP** 及后续版本的优化计划。
 
-> 当前基线：v0.1.0 · CLI + HTTP API + **Web 控制台** + Postgres/Redis + Dreaming + Hereness v2 + RAG + 会话多轮 + **Token 用量追踪/持久化** + Worker 工具链 + SSE/取消 + 农业电商 BFF · **160+ 测试**
+> 当前基线：v0.1.0 · CLI + HTTP API + **Web 控制台** + Postgres/Redis + Dreaming + Hereness v2 + RAG + 会话多轮 + **Token 用量追踪/持久化** + Worker 工具链 + **ppt-master PPT 生成** + SSE/取消 + 农业电商 BFF · **170+ 测试**
 
 ---
 
@@ -27,6 +27,7 @@
 | Session 用量 API | `GET /v1/sessions/{id}/usage` · 前端侧边栏展示 |
 | 自定义确认弹窗 | 替换浏览器原生 `confirm` |
 | Persona 隔离 | consumer / merchant 工具白名单与路由 |
+| ppt-master PPT | `presentation` Worker · Skill 注入 · `ppt_master_build_pptx` · 产物下载 API |
 
 ---
 
@@ -39,6 +40,7 @@
 ### P3-2 · 工具链扩展（部分完成）
 
 - Worker HTTP / 文件 / 代码工具 ✅
+- ppt-master PPT 工具链（Harness 一键出片 + 项目导出）✅
 - 农业电商 BFF（mock / HTTP）✅
 - 工具权限三层交集 ✅
 - Critic 工具结果校验 ✅

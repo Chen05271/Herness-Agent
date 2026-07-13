@@ -2,7 +2,7 @@
 
 多 Agent 协作框架：**PydanticAI 节点层 + 手写调度器 + 数据中台协议**。
 
-> 版本：0.1.0 · Python >= 3.11 · 当前阶段：**通用多 Agent 框架 Demo + HTTP API + Web 控制台（含设置页 / 配额） + Postgres/Redis 持久化 + Dreaming + Hereness v2 + RAG + 会话多轮 + Token 用量追踪与配额 + Worker 工具链 + 可选领域集成（如农业电商 BFF）**
+> 版本：0.1.0 · Python >= 3.11 · 当前阶段：**通用多 Agent 框架 Demo + HTTP API + Web 控制台（含设置页 / 配额） + Postgres/Redis 持久化 + Dreaming + Hereness v2 + RAG + 会话多轮 + Token 用量追踪与配额 + Worker 工具链 + ppt-master PPT 生成 + 可选领域集成（如农业电商 BFF）**
 
 ---
 
@@ -89,8 +89,12 @@ src/herness/
 │   ├── critic.py               # 校验 Agent
 │   ├── critic_validation.py    # Critic 后校验（信念库对齐）
 │   ├── tools.py                # Worker 外部工具实现
+│   ├── ppt_master_harness.py   # ppt-master 一键构建 PPTX
+│   ├── ppt_master_tools.py     # ppt-master SVG 导出封装
 │   ├── tool_policy.py          # 工具权限策略（三层交集）
 │   └── tool_trace.py           # 工具调用记录提取
+├── skills/
+│   └── registry.py             # Skill 绑定（ppt-master → presentation Worker）
 ├── api/
 │   ├── app.py                  # FastAPI 应用
 │   ├── routes.py               # /v1/tasks、用量与公开配置路由
@@ -175,7 +179,8 @@ web/                            # Vue 3 Web 控制台（Chat / Ops / RAG / Setti
 | `GET /v1/tasks/{id}/stream` | SSE 流式推送审计日志（长任务实时观测） |
 | `GET /v1/sessions/{id}/usage` | 查询 session 累计 token 用量（`?user_id=`） |
 | `GET /v1/users/{id}/usage` | 查询用户累计 token 用量（含 Orchestrator / Dreaming / Embedding 等） |
-| `GET /v1/config/public` | 公开配置快照（模型名、能力开关、token 配额上限） |
+| `GET /v1/config/public` | 公开配置快照（模型名、能力开关、token 配额上限、已加载 Skills） |
+| `GET /v1/tasks/{id}/artifacts/{path}` | 下载任务产物（如生成的 `.pptx`） |
 | `DELETE /v1/tasks/{id}` | 取消 PENDING / RUNNING 任务 |
 
 任务状态存储：配置 `REDIS_URL` 后自动切换为 Redis，否则使用进程内内存。
@@ -219,6 +224,7 @@ API 请求可通过 `metadata.persona` 指定角色；未显式传入 `allowed_t
 | `research` | 调研与信息归纳 |
 | `code` | 代码编写与解释 |
 | `summary` | 摘要压缩 |
+| `presentation` | 数据分析汇报 PPT（ppt-master） |
 | `order_ops` | 订单与履约（需启用领域集成） |
 | `product` | 商品与库存（需启用领域集成） |
 | `traceability` | 溯源与质检（需启用领域集成） |
@@ -233,10 +239,83 @@ Supervisor 可通过 `worker_types` 与 `task_instructions` 并行路由；调�
 | `http_request` | `WORKER_TOOLS_HTTP_ENABLED` | HTTP/HTTPS 请求，响应体可截断 |
 | `read_text_file` | `WORKER_TOOLS_FILE_ENABLED` + `WORKER_TOOLS_FILE_BASE_DIR` | 读取指定目录内文本文件（防目录穿越） |
 | `run_python_code` | `WORKER_TOOLS_CODE_ENABLED` | 子进程执行 Python 片段（生产环境谨慎开启） |
+| `ppt_master_build_pptx` | `WORKER_TOOLS_PPT_ENABLED` + `WORKER_TOOLS_OUTPUT_BASE_DIR` | 从 JSON 数据一键生成多页 PPTX |
+| `ppt_master_export_project` | 同上 | 导出已有 ppt-master 项目为 PPTX |
+| `ppt_master_export_svg_to_pptx` | 同上 | 单页 SVG 快速导出 PPTX |
 
-文件与代码工具默认关闭；HTTP 工具默认开启。工具错误以文本形式返回给 LLM，不中断调度。
+文件与代码工具默认关闭；HTTP 工具默认开启；PPT 工具默认开启。工具错误以文本形式返回给 LLM，不中断调度。
 
 工具权限由 **全局 Settings → 中台 metadata → 任务 metadata** 三层交集决定（`tool_policy.py`）；Critic 可校验 Worker 工具调用结果（`tool_trace.py`）。
+
+### PPT 生成（ppt-master）
+
+对话中一句话即可生成 `.pptx`，无需单独前端页面。框架统一走 **ppt-master** skill，已废弃旧的 `generate_pptx` / python-pptx 直出路径。
+
+> **上游来源**：ppt-master **不包含在本仓库**。请从上游安装：[hugohe3/ppt-master](https://github.com/hugohe3/ppt-master)（MIT）。安装后 Skill 应位于 `.agents/skills/ppt-master/`（或通过 `SKILLS_BASE_DIR` 指向等价路径）。
+
+| 能力 | 状态 |
+|------|------|
+| `presentation` Worker 专业化路由 | ✅ 已实现 |
+| Skill 自动检测（「做 PPT」「生成幻灯片」等关键词） | ✅ 已实现 |
+| `ppt_master_build_pptx` 从 JSON 一键出片 | ✅ 已实现 |
+| `ppt_master_export_project` 导出已有项目 | ✅ 已实现 |
+| 任务产物下载 `GET /v1/tasks/{id}/artifacts/{path}` | ✅ 已实现 |
+
+**对话用法（Harness / API）：**
+
+```json
+{
+  "user_id": "u1",
+  "session_id": "s1",
+  "input": "用 demo_last_month.json 生成一份经营复盘 PPT",
+  "metadata": {
+    "skills": ["ppt-master"],
+    "allowed_tools": ["read_text_file", "ppt_master_build_pptx"]
+  }
+}
+```
+
+Supervisor 会将 PPT 类任务路由到 `presentation` Worker；Worker 读取 JSON 后调用 `ppt_master_build_pptx`，产物写入 `outputs/{task_id}/` 并通过 `artifacts` 字段返回相对路径。
+
+**安装 ppt-master（首次使用前）：**
+
+```powershell
+# 方式 A — Skill 市场（Cursor / Codex 等，推荐）
+npx skills add hugohe3/ppt-master
+# 默认安装到用户目录 ~/.agents/skills/ppt-master
+# 可将 SKILLS_BASE_DIR 设为该路径，或复制/链接到本仓库 .agents/skills/ppt-master
+
+# 方式 B — Git 克隆到本仓库
+git clone https://github.com/hugohe3/ppt-master.git _vendor/ppt-master
+New-Item -ItemType Directory -Force .agents/skills | Out-Null
+cmd /c mklink /J .agents\skills\ppt-master _vendor\ppt-master\skills\ppt-master
+
+# 安装 Python 依赖（在 ppt-master 仓库根目录执行）
+py -3.11 -m pip install -r _vendor/ppt-master/requirements.txt
+```
+
+上游完整工作流、模板与多阶段确认见 [hugohe3/ppt-master — SKILL.md](https://github.com/hugohe3/ppt-master/blob/main/skills/ppt-master/SKILL.md)。
+
+**本地脚本快速生成：**
+
+```powershell
+# 准备数据文件 outputs/demo_last_month.json 后执行
+py -3.11 scripts/generate_demo_last_month_ppt.py
+# → outputs/demo_last_month/demo_last_month_report.pptx
+```
+
+**配置：**
+
+```env
+WORKER_TOOLS_PPT_ENABLED=true
+WORKER_TOOLS_OUTPUT_BASE_DIR=outputs
+WORKER_TOOLS_FILE_ENABLED=true
+WORKER_TOOLS_FILE_BASE_DIR=outputs
+SKILLS_ENABLED=true
+SKILLS_BASE_DIR=.agents/skills
+```
+
+需已安装上游 [ppt-master](https://github.com/hugohe3/ppt-master)（Python 3.11+）。Harness 一键出片走内置工具封装；高级版式、模板、多阶段确认请按上游 SKILL 流程操作。
 
 ### 可选领域集成
 
@@ -641,6 +720,10 @@ py -3.11 -m pytest tests/test_middleware_postgres.py tests/test_middleware_redis
 | `WORKER_TOOLS_FILE_MAX_BYTES` | `65536` | 单文件读取上限（字节） |
 | `WORKER_TOOLS_CODE_ENABLED` | `false` | Worker Python 代码执行开关 |
 | `WORKER_TOOLS_CODE_TIMEOUT_SECONDS` | `10` | 代码执行超时（秒） |
+| `WORKER_TOOLS_PPT_ENABLED` | `true` | ppt-master PPT 工具开关 |
+| `WORKER_TOOLS_OUTPUT_BASE_DIR` | `outputs` | Worker 产物输出根目录 |
+| `SKILLS_ENABLED` | `true` | 运行时 Skill 加载与注入 |
+| `SKILLS_BASE_DIR` | `.agents/skills` | Skill 根目录（需自行安装 [ppt-master](https://github.com/hugohe3/ppt-master)） |
 | `HERENESS_ENABLED` | `false` | Hereness 信念库深度校验 |
 | `HERENESS_VECTOR_ENABLED` | `false` | Hereness v2 pgvector 语义检索 |
 | `EMBEDDING_MODEL` | `text-embedding-3-small` | Embeddings 模型 |

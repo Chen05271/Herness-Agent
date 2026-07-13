@@ -33,7 +33,7 @@ class SupervisorOutput(BaseModel):
         default_factory=list,
         description=(
             "与 task_instructions 对齐的 Worker 类型路由"
-            "（default/research/code/summary/order_ops/product/traceability）"
+            "（default/research/code/summary/presentation/order_ops/product/traceability）"
         ),
     )
     final_answer: str = Field(

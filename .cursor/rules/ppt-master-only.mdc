@@ -1,0 +1,12 @@
+---
+description: PPT 生成统一走 ppt-master，禁止旧 python-pptx 直出路径
+alwaysApply: true
+---
+
+# PPT 生成规则
+
+- 用户要求生成/制作 PPT、幻灯片、演示文稿时，**只使用 `ppt-master`**。
+- **禁止**使用已废弃的 `generate_pptx` / `data-analysis-ppt` / python-pptx 直出路径。
+- Harness 对话场景优先调用 `ppt_master_build_pptx`（从 JSON 数据一键生成）。
+- 需要高级版式、模板、多阶段确认时，遵循 `.agents/skills/ppt-master/SKILL.md` 完整流程。
+- 产物必须是 `.pptx`，并写入任务 `artifacts` 供下载。

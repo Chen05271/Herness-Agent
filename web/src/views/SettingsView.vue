@@ -76,6 +76,8 @@ const featureLabels = computed(() => {
     { key: "Hereness", enabled: features.hereness_enabled },
     { key: "Agri", enabled: features.agri_commerce_enabled },
     { key: "OTEL", enabled: features.otel_enabled },
+    { key: "Skills", enabled: features.skills_enabled },
+    { key: "PPT", enabled: features.ppt_enabled },
   ];
 });
 

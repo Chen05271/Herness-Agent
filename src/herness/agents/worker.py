@@ -7,6 +7,8 @@ import httpx
 from pydantic_ai import Agent, RunContext
 
 from herness.agents.base import build_model
+from herness.agents.ppt_master_harness import build_pptx_from_source, export_project_to_pptx
+from herness.agents.ppt_master_tools import export_svg_to_pptx
 from herness.agents.tools import WorkerToolError, http_request, read_text_file, run_python_code
 from herness.config import Settings
 from herness.integrations.agri_commerce.protocol import AgriCommerceClient
@@ -46,6 +48,7 @@ class WorkerDeps:
     allowed_tools: frozenset[str]
     worker_type: WorkerKind = "default"
     persona: Persona = "consumer"
+    skill_instructions: str = ""
     agri_client: AgriCommerceClient | None = None
     admin_client: AgriAdminClient | None = None
 
@@ -105,6 +108,78 @@ def _register_worker_tools(
                 return await run_python_code(code, settings=settings)
             except WorkerToolError as exc:
                 return f"代码执行错误：{exc}"
+
+
+def _register_ppt_tools(
+    agent: Agent[WorkerDeps, WorkerOutput],
+    settings: Settings,
+) -> None:
+    ppt_enabled = (
+        settings.worker_tools_ppt_enabled
+        and bool(settings.worker_tools_output_base_dir.strip())
+    )
+    if not ppt_enabled:
+        return
+
+    @agent.tool
+    async def ppt_master_build_pptx_tool(
+        ctx: RunContext[WorkerDeps],
+        source_path: str,
+        filename: str = "report.pptx",
+    ) -> str:
+        """用 ppt-master 从 JSON 数据文件一键生成多页 PPTX，返回相对产物路径。"""
+        if "ppt_master_build_pptx" not in ctx.deps.allowed_tools:
+            return _tool_denied("ppt_master_build_pptx")
+        try:
+            rel_path = await build_pptx_from_source(
+                source_path=source_path,
+                filename=filename,
+                task_id=ctx.deps.task_id,
+                settings=settings,
+            )
+            return f"已生成 PPT（ppt-master）：{rel_path}"
+        except WorkerToolError as exc:
+            return f"ppt-master 生成错误：{exc}"
+
+    @agent.tool
+    async def ppt_master_export_project_tool(
+        ctx: RunContext[WorkerDeps],
+        project_path: str,
+        filename: str = "report.pptx",
+    ) -> str:
+        """导出已有 ppt-master 项目目录为 PPTX，返回相对产物路径。"""
+        if "ppt_master_export_project" not in ctx.deps.allowed_tools:
+            return _tool_denied("ppt_master_export_project")
+        try:
+            rel_path = await export_project_to_pptx(
+                project_path=project_path,
+                filename=filename,
+                task_id=ctx.deps.task_id,
+                settings=settings,
+            )
+            return f"已导出 PPT（ppt-master 项目）：{rel_path}"
+        except WorkerToolError as exc:
+            return f"ppt-master 项目导出错误：{exc}"
+
+    @agent.tool
+    async def ppt_master_export_svg_to_pptx_tool(
+        ctx: RunContext[WorkerDeps],
+        svg: str,
+        filename: str = "ppt_master_export.pptx",
+    ) -> str:
+        """用 ppt-master 将单页 SVG 导出为 PPTX，返回相对产物目录的路径。"""
+        if "ppt_master_export_svg_to_pptx" not in ctx.deps.allowed_tools:
+            return _tool_denied("ppt_master_export_svg_to_pptx")
+        try:
+            rel_path = await export_svg_to_pptx(
+                svg=svg,
+                filename=filename,
+                task_id=ctx.deps.task_id,
+                settings=settings,
+            )
+            return f"已导出 PPT（ppt-master）：{rel_path}"
+        except WorkerToolError as exc:
+            return f"ppt-master 导出错误：{exc}"
 
 
 def _register_rag_tools(
@@ -308,6 +383,13 @@ def build_worker_agent(
         """注入任务级局部上下文（不含全局记忆）。"""
         return f"## 任务局部上下文\n{ctx.deps.local_context}"
 
+    @agent.instructions
+    async def inject_skill_instructions(ctx: RunContext[WorkerDeps]) -> str:
+        """注入已启用技能的执行指令。"""
+        if not ctx.deps.skill_instructions.strip():
+            return ""
+        return f"## 技能指令\n{ctx.deps.skill_instructions}"
+
     @agent.tool
     async def fetch_task_context(ctx: RunContext[WorkerDeps]) -> str:
         """从中台只读接口获取任务上下文。"""
@@ -319,6 +401,7 @@ def build_worker_agent(
         return str(context)
 
     _register_worker_tools(agent, settings)
+    _register_ppt_tools(agent, settings)
     _register_rag_tools(agent, settings)
     _register_agri_commerce_tools(agent, settings)
     _register_agri_admin_tools(agent)

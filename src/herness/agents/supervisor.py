@@ -11,6 +11,8 @@ from herness.middleware.protocol import DataMiddleware
 from herness.middleware.session import SessionHistoryEntry, format_session_history
 from herness.models.supervisor import SupervisorOutput
 from herness.personas import Persona, supervisor_domain_block, supervisor_persona_block
+from herness.skills.enrich import supervisor_skills_block
+from herness.skills.enrich import supervisor_skills_block
 
 
 @dataclass
@@ -24,6 +26,7 @@ class SupervisorDeps:
     task_id: str
     session_id: str
     persona: Persona = "consumer"
+    skills_block: str = ""
 
 
 SUPERVISOR_SYSTEM = """\
@@ -36,7 +39,7 @@ SUPERVISOR_SYSTEM = """\
 规则：
 - action=delegate 时必须给出 task_instruction（单条）或 task_instructions（多条并行）
 - 可独立子任务请用 task_instructions 列表一次性委派，并可选 worker_types 路由
-- 复杂任务按能力路由 Worker：调研 → research；代码 → code；摘要 → summary；通用执行 → default
+- 复杂任务按能力路由 Worker：调研 → research；代码 → code；摘要 → summary；PPT/汇报 → presentation；通用执行 → default
 - action=complete 时必须给出 final_answer
 - action=abort 时必须给出 abort_reason
 - 你只能规划，不直接执行具体操作
@@ -74,6 +77,11 @@ def build_supervisor_agent(settings: Settings) -> Agent[SupervisorDeps, Supervis
     async def inject_domain(ctx: RunContext[SupervisorDeps]) -> str:
         """注入可选领域集成路由（如农业电商 BFF）。"""
         return supervisor_domain_block(settings)
+
+    @agent.instructions
+    async def inject_skills(ctx: RunContext[SupervisorDeps]) -> str:
+        """注入已启用技能的路由提示。"""
+        return ctx.deps.skills_block
 
     @agent.tool
     async def read_task_history(ctx: RunContext[SupervisorDeps]) -> str:

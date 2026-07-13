@@ -65,6 +65,16 @@ class PublicConfigFeatures(BaseModel):
     hereness_enabled: bool = False
     agri_commerce_enabled: bool = False
     otel_enabled: bool = False
+    skills_enabled: bool = False
+    ppt_enabled: bool = False
+
+
+class PublicSkillInfo(BaseModel):
+    """公开 Skill 元信息。"""
+
+    name: str
+    description: str = ""
+    worker_kind: str = "default"
 
 
 class PublicConfigLimits(BaseModel):
@@ -81,6 +91,7 @@ class PublicConfigResponse(BaseModel):
     api_version: str = "0.1.0"
     features: PublicConfigFeatures = Field(default_factory=PublicConfigFeatures)
     limits: PublicConfigLimits = Field(default_factory=PublicConfigLimits)
+    skills: list[PublicSkillInfo] = Field(default_factory=list)
 
 
 class RagIngestRequest(BaseModel):

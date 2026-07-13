@@ -382,6 +382,24 @@ class Settings(BaseSettings):
         le=120.0,
         description="Python 代码执行超时（秒）",
     )
+    worker_tools_ppt_enabled: bool = Field(
+        default=True,
+        description="Worker 是否可使用 ppt-master PPT 工具",
+    )
+    worker_tools_output_base_dir: str = Field(
+        default="outputs",
+        description="Worker 产物输出根目录（PPT 等生成文件）",
+    )
+
+    # ── 运行时 Skill ──
+    skills_enabled: bool = Field(
+        default=True,
+        description="是否启用运行时 Skill 加载与注入",
+    )
+    skills_base_dir: str = Field(
+        default=".agents/skills",
+        description="Skill 根目录（相对项目根或绝对路径）",
+    )
 
     def model_post_init(self, __context: object) -> None:
         """兼容旧 env 变量名：VLLM_* / MODEL_NAME / DASHSCOPE_API_KEY 优先覆盖 llm_*。"""

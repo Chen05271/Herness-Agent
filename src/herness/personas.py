@@ -6,6 +6,7 @@ import re
 from typing import TYPE_CHECKING, Any, Literal
 
 from herness.models.task import TaskRequest
+from herness.skills.enrich import enrich_metadata_with_skills
 
 if TYPE_CHECKING:
     from herness.config import Settings
@@ -111,8 +112,13 @@ def prepare_task_request(
     *,
     settings: Settings | None = None,
 ) -> TaskRequest:
-    """规范化任务请求：注入 persona 白名单、校验身份、隔离 session。"""
+    """规范化任务请求：注入 persona 白名单、skill、校验身份、隔离 session。"""
     meta = enrich_metadata_with_persona(request.metadata, settings=settings)
+    meta = enrich_metadata_with_skills(
+        meta,
+        settings=settings,
+        user_input=request.input,
+    )
     persona = get_persona(meta)
     validate_persona_identity(request.user_id, persona)
     session_id = normalize_session_id(persona, request.user_id, request.session_id)
@@ -174,14 +180,21 @@ def supervisor_persona_block(persona: Persona) -> str:
 
 def supervisor_domain_block(settings: Settings) -> str:
     """可选领域集成路由提示；未启用集成时返回空字符串。"""
-    if not settings.agri_commerce_enabled:
-        return ""
-    return (
-        "## 领域集成（农业电商）\n"
-        "- 订单/物流 → order_ops Worker\n"
-        "- 商品/库存 → product Worker\n"
-        "- 溯源/质检 → traceability Worker\n"
-    )
+    blocks: list[str] = []
+    if settings.skills_enabled:
+        blocks.append(
+            "## 技能路由\n"
+            "- 数据分析 / PPT / 汇报 / 幻灯片 → presentation Worker（ppt-master）\n"
+            "- 用户可在 metadata.skills 中指定技能，如 [\"ppt-master\"]\n"
+        )
+    if settings.agri_commerce_enabled:
+        blocks.append(
+            "## 领域集成（农业电商）\n"
+            "- 订单/物流 → order_ops Worker\n"
+            "- 商品/库存 → product Worker\n"
+            "- 溯源/质检 → traceability Worker\n"
+        )
+    return "\n".join(blocks)
 
 
 def agent_user_id(persona: Persona, *, consumer_user_id: str, merchant_id: str, operator_id: str) -> str:

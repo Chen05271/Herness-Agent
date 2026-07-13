@@ -35,6 +35,7 @@ export interface TaskCreateRequest {
   metadata?: {
     persona?: Persona;
     allowed_tools?: string[];
+    skills?: string[];
   };
   task_id?: string | null;
 }
@@ -78,6 +79,14 @@ export interface PublicConfigFeatures {
   hereness_enabled: boolean;
   agri_commerce_enabled: boolean;
   otel_enabled: boolean;
+  skills_enabled: boolean;
+  ppt_enabled: boolean;
+}
+
+export interface PublicSkillInfo {
+  name: string;
+  description: string;
+  worker_kind: string;
 }
 
 export interface PublicConfigLimits {
@@ -90,6 +99,7 @@ export interface PublicConfigResponse {
   api_version: string;
   features: PublicConfigFeatures;
   limits: PublicConfigLimits;
+  skills: PublicSkillInfo[];
 }
 
 export interface TaskCancelResponse {

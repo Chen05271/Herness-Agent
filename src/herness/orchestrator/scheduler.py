@@ -42,6 +42,7 @@ from herness.observability.tracing import start_span
 from herness.observability.usage import usage_from_run, usage_payload
 from herness.orchestrator.cancellation import TaskCancellationRegistry, TaskCancelledError
 from herness.personas import get_persona, prepare_task_request
+from herness.skills.enrich import supervisor_skills_block, worker_skill_instructions
 
 logger = logging.getLogger(__name__)
 
@@ -339,6 +340,7 @@ class Orchestrator:
             task_id=state.task_id,
             session_id=state.request.session_id,
             persona=get_persona(state.request.metadata),
+            skills_block=supervisor_skills_block(state.request.metadata),
         )
 
         async def _call() -> SupervisorOutput:
@@ -454,6 +456,7 @@ class Orchestrator:
             allowed_tools=allowed_tools,
             worker_type=worker_type,
             persona=persona,
+            skill_instructions=worker_skill_instructions(state.request.metadata),
             agri_client=self._agri_client if persona == "consumer" else None,
             admin_client=build_admin_commerce_client(
                 self.settings,

@@ -52,8 +52,16 @@ def test_supervisor_persona_block_differs():
     assert "用户端" in supervisor_persona_block("consumer")
 
 
-def test_supervisor_domain_block_empty_by_default():
-    assert supervisor_domain_block(Settings(agri_commerce_enabled=False)) == ""
+def test_supervisor_domain_block_empty_when_all_disabled():
+    assert supervisor_domain_block(
+        Settings(agri_commerce_enabled=False, skills_enabled=False)
+    ) == ""
+
+
+def test_supervisor_domain_block_includes_skills_when_enabled():
+    block = supervisor_domain_block(Settings(skills_enabled=True))
+    assert "presentation" in block
+    assert "ppt-master" in block
 
 
 def test_supervisor_domain_block_when_enabled():
