@@ -1,4 +1,4 @@
-# Herness Agent
+# Harness Agent
 
 多 Agent 协作框架：**PydanticAI 节点层 + 手写调度器 + 数据中台协议**。
 
